@@ -116,7 +116,6 @@ SWEEP_CONFIG_FULL = {
         "normalize": {
             "values": [False]
         },
-        # Adding model architecture parameters
         "d_model": {
             "values": [512]
         },
@@ -156,7 +155,7 @@ def main():
         project=f"{WANDB_CONFIG['project']}", 
         entity=WANDB_CONFIG["entity"]
     )
-        
+
     # Start the sweep agent
     wandb.agent(sweep_id, train_model)
 
@@ -187,9 +186,6 @@ def train_model():
     # Split the image IDs
     train_ids = image_ids[:train_size]
     test_ids = image_ids[train_size:train_size+test_size]
-
-    if True:
-        test_ids = image_ids[:test_size]
     
     # Create dictionaries for each split
     train_images = {id: images[id] for id in train_ids}

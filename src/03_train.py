@@ -6,6 +6,8 @@ from src.dataset import ImageCaptioningDataset
 
 from src.config import PROCESSED_DATA_DIR, FIGURES_DIR
 
+from loguru import logger
+
 import pickle
 import random
 import torch
@@ -33,12 +35,12 @@ def set_seed(seed):
 def main():
     set_seed(3047)
 
-    with open(PROCESSED_DATA_DIR / "flickr30k/100_images.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "flickr30k/5000_images.pkl", "rb") as f:
         images = pickle.load(f)
 
     # pprint.pprint(images[0])
 
-    with open(PROCESSED_DATA_DIR / "flickr30k/100_captions.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "flickr30k/5000_captions.pkl", "rb") as f:
         captions = pickle.load(f)
     
     # Convert dictionary to list for proper splitting
@@ -59,11 +61,14 @@ def main():
     test_images = {id: images[id] for id in test_ids}
     val_images = {id: images[id] for id in val_ids}
     
-    print(f"Train images: {len(train_images)}")
-    print(f"Test images: {len(test_images)}")
-    print(f"Validation images: {len(val_images)}")
+    logger.info(f"Train images: {len(train_images)}")
+    logger.info(f"Test images: {len(test_images)}")
+    logger.info(f"Validation images: {len(val_images)}")
 
     model = UnifiedAutoregressiveDecoder()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
     print("Model loaded")
 
@@ -80,11 +85,11 @@ def main():
     num_epochs = 5
 
     for epoch in range(num_epochs):
-        loss = train_one_epoch_full_sentence(model, dataloader, optimizer, criterion)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss:.4f}")
+        loss = train_one_epoch(model, dataloader, optimizer, criterion, full_sentence_step)
+        logger.info(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss:.4f}")
         evaluate(model, test_images, captions)
 
-def train_one_epoch_full_sentence(model, dataloader, optimizer, criterion):
+def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
@@ -95,22 +100,9 @@ def train_one_epoch_full_sentence(model, dataloader, optimizer, criterion):
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
         
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
-        outputs = model(images, input_ids)
-        
-        # Calculate loss
-        loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
-        
-        # Backward pass
-        loss.backward()
-        
-        # Update parameters
-        optimizer.step()
-        
         # Track total loss
+        loss = step_function(model, images, input_ids, label_ids, optimizer, criterion)
+
         total_loss += loss.item()
         
         # Update progress bar with non-zero loss
@@ -119,84 +111,85 @@ def train_one_epoch_full_sentence(model, dataloader, optimizer, criterion):
     # Return average loss over all batches
     return total_loss / len(dataloader)
 
-def train_one_epoch_logit_by_logit(model, dataloader, optimizer, criterion):
-    model.train()
-    total_loss = 0
-    progress_bar = tqdm(dataloader, desc="Training", leave=False)
-    device = next(model.parameters()).device
+def full_sentence_step(model, images, input_ids, label_ids, optimizer, criterion):
+    # Zero gradients
+    optimizer.zero_grad()
     
-    for batch in progress_bar:
-        images = batch["image_bytes"].to(device)
-        input_ids = batch["input_ids"].to(device)
-        label_ids = batch["label_ids"].to(device)
-        
-        seq_length = input_ids.shape[2]
+    # Forward pass
+    outputs = model(images, input_ids)
+    
+    # Calculate loss
+    loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+    
+    # Backward pass
+    loss.backward()
+    
+    # Update parameters
+    optimizer.step()
 
-        # Print shapes for debugging    
-        print(f"images shape: {images.shape}")
-        print(f"input_ids shape: {input_ids.shape}")
-        print(f"label_ids shape: {label_ids.shape}")
-        print(f"seq_length: {seq_length}")
-        
-        # Initialize running loss scalar
-        batch_total_loss = 0
-        sequence_positions = 0
-        
-        # For each position in the sequence
-        for i in range(1, seq_length):
-            # Get progressively longer chunks of input
-            curr_input = input_ids[:, :, :i]
-            
-            # Zero gradients for each step
-            optimizer.zero_grad()
-            
-            # Use the forward method to get predictions
-            outputs = model(images, curr_input)
-            
-            # Get corresponding target (next token predictions)
-            # We want to predict the next token at each position
-            target_idx = i  # The next token after our current input
-            if target_idx < seq_length:
-                curr_target = label_ids[:, 0, target_idx]  # Access correct dimension
-                
-                # Calculate loss for this step (predict next token)
-                # outputs shape: [batch_size, seq_len, vocab_size]
-                # We want the prediction for the last position in the sequence
-                last_token_logits = outputs[:, -1, :]  # Get logits for the last token
-                step_loss = criterion(last_token_logits, curr_target)
-                
-                # Backward pass for this step's loss
-                step_loss.backward()
-                
-                # Update parameters
-                optimizer.step()
-                
-                # Add to running loss
-                batch_total_loss += step_loss.item()
-                sequence_positions += 1
-            
-            # Check if any sequence has reached EOS token
-            if (curr_input == model.tokenizer.eos_token_id).any(dim=1).any():
-                break
-                
-            # Check if we've reached model's maximum length
-            if i >= model.max_len - 1:
-                break
-        
-        # Calculate average loss for this batch
-        if sequence_positions > 0:
-            avg_batch_loss = batch_total_loss / sequence_positions
-        else:
-            avg_batch_loss = 0
-        
-        # Track total loss
-        total_loss += avg_batch_loss
-        
-        # Update progress bar with non-zero loss
-        progress_bar.set_postfix(loss=f"{avg_batch_loss:.4f}")
+    return loss
+
+def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion):
+    seq_length = input_ids.shape[2]
+
+    # Print shapes for debugging    
+    logger.info(f"images shape: {images.shape}")
+    logger.info(f"input_ids shape: {input_ids.shape}")
+    logger.info(f"label_ids shape: {label_ids.shape}")
+    logger.info(f"seq_length: {seq_length}")
     
-    # Return average loss over all batches
-    return total_loss / len(dataloader)
+    # Initialize running loss scalar
+    batch_total_loss = 0
+    sequence_positions = 0
+    
+    # For each position in the sequence
+    for i in range(1, seq_length):
+        # Get progressively longer chunks of input
+        curr_input = input_ids[:, :, :i]
+        
+        # Zero gradients for each step
+        optimizer.zero_grad()
+        
+        # Use the forward method to get predictions
+        outputs = model(images, curr_input)
+        
+        # Get corresponding target (next token predictions)
+        # We want to predict the next token at each position
+        target_idx = i  # The next token after our current input
+        if target_idx < seq_length:
+            curr_target = label_ids[:, 0, target_idx]  # Access correct dimension
+            
+            # Calculate loss for this step (predict next token)
+            # outputs shape: [batch_size, seq_len, vocab_size]
+            # We want the prediction for the last position in the sequence
+            last_token_logits = outputs[:, -1, :]  # Get logits for the last token
+            step_loss = criterion(last_token_logits, curr_target)
+            
+            # Backward pass for this step's loss
+            step_loss.backward()
+            
+            # Update parameters
+            optimizer.step()
+            
+            # Add to running loss
+            batch_total_loss += step_loss.item()
+            sequence_positions += 1
+        
+        # Check if any sequence has reached EOS token
+        if (curr_input == model.tokenizer.eos_token_id).any(dim=1).any():
+            break
+            
+        # Check if we've reached model's maximum length
+        if i >= model.max_len - 1:
+            break
+    
+    # Calculate average loss for this batch
+    if sequence_positions > 0:
+        avg_batch_loss = batch_total_loss / sequence_positions
+    else:
+        avg_batch_loss = 0
+        
+    return avg_batch_loss
 
 def evaluate(model, test_images, test_captions):
     model.eval()
@@ -241,9 +234,9 @@ def evaluate(model, test_images, test_captions):
     # Print results
     print("\nGenerated captions:")
     for i in range(num_samples):
-        print(f"Image {i+1}:")
-        print(f"Generated: {generated_captions[i]}")
-        print(f"Ground truth: {ground_truth_captions[i]}")
+        logger.info(f"Image {i+1}:")
+        logger.info(f"Generated: {generated_captions[i]}")
+        logger.info(f"Ground truth: {ground_truth_captions[i]}")
         print("---")
     
     # Import the plotting function

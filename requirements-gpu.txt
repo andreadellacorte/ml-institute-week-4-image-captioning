@@ -1,4 +1,3 @@
--e .
 black
 datasets
 flake8
@@ -11,6 +10,7 @@ jupyterlab
 loguru
 matplotlib
 notebook
+nltk
 numpy<2
 pandas
 pillow
@@ -18,11 +18,14 @@ pip
 pytest
 python-dotenv
 scikit-learn
+seaborn
 streamlit
 sortedcontainers
 torch==2.6.0
 torchvision
+transformers
 tqdm
 typer
 wandb
+wordcloud
 -e .

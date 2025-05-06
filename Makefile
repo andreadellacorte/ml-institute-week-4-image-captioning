@@ -3,7 +3,7 @@
 #################################################################################
 
 PROJECT_NAME = ml-institute-week-4-image-captioning
-PYTHON_VERSION = 3.11
+PYTHON_VERSION = 3.10
 PYTHON_INTERPRETER = python
 
 #################################################################################

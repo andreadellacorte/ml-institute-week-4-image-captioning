@@ -36,11 +36,20 @@ def plot_images_with_captions(images, captions, title="Generated Captions", save
             else:
                 # Assuming it's a tensor, convert to numpy and adjust
                 img_np = img.detach().cpu().numpy()
-                if img_np.shape[0] in [1, 3]:  # If in [C, H, W] format
+                # Remove batch/channel singleton dims
+                while img_np.ndim > 3:
+                    img_np = np.squeeze(img_np, axis=0)
+                if img_np.shape[0] in [1, 3]:  # [C, H, W] -> [H, W, C]
                     img_np = np.transpose(img_np, (1, 2, 0))
+                # If still has singleton channel, squeeze
+                if img_np.shape[-1] == 1:
+                    img_np = np.squeeze(img_np, axis=-1)
                 # Normalize if needed
-                if img_np.max() <= 1.0:
-                    img_np = (img_np * 255).astype(np.uint8)
+                if img_np.dtype != np.uint8:
+                    if img_np.max() <= 1.0:
+                        img_np = (img_np * 255).clip(0, 255).astype(np.uint8)
+                    else:
+                        img_np = img_np.clip(0, 255).astype(np.uint8)
                 img = Image.fromarray(img_np)
         
         # Display image

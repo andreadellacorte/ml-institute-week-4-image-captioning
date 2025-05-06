@@ -238,7 +238,8 @@ def train_model():
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         
-    criterion = torch.nn.CrossEntropyLoss()
+    # Use ignore_index for PAD tokens
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
     
     # Select step function based on config
     if config.step_function == "logit_by_logit":
@@ -265,6 +266,7 @@ def train_model():
         # Evaluate model every other epoch to save time
         if (epoch + 1) % 2 == 0 or epoch == config.num_epochs - 1:
             evaluate(model, test_dataset)
+            validate(model, test_dataset, criterion)
     
     # Final logging of metrics
     wandb.log({
@@ -279,41 +281,23 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     total_loss = 0
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
     device = next(model.parameters()).device
-    
     for batch in progress_bar:
         images = batch["image_bytes"].to(device)
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
-        
+        attention_mask = batch["attention_mask"].to(device)
         # Track total loss
-        loss = step_function(model, images, input_ids, label_ids, optimizer, criterion)
-
+        loss = step_function(model, images, input_ids, label_ids, attention_mask, optimizer, criterion)
         total_loss += loss.item()
-        
-        # Update progress bar with non-zero loss
         progress_bar.set_postfix(loss=f"{loss.item():.4f}")
-    
-    # Return average loss over all batches and batch times
     return total_loss / len(dataloader)
 
-def full_sentence_step(model, images, input_ids, label_ids, optimizer, criterion):
-    # Zero gradients
+def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion):
     optimizer.zero_grad()
-    
-    # Forward pass
-    outputs = model(images, input_ids)
-
-    print(f"Outputs shape: {outputs[1].shape}")
-    
-    # Calculate loss
+    outputs = model(images, input_ids, attention_mask=attention_mask)
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
-    
-    # Backward pass
     loss.backward()
-    
-    # Update parameters
     optimizer.step()
-
     return loss
 
 def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion):
@@ -445,9 +429,23 @@ def evaluate(model, test_dataset):
         # Log the table
         wandb.log({"caption_examples": caption_table})
 
-def validate(model, val_images, val_captions):
-    # Implement your validation loop here
-    pass
+def validate(model, val_dataset, criterion):
+    model.eval()
+    device = next(model.parameters()).device
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=16)
+    total_loss = 0
+    with torch.no_grad():
+        for batch in val_loader:
+            images = batch["image_bytes"].to(device)
+            input_ids = batch["input_ids"].to(device)
+            label_ids = batch["label_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            outputs = model(images, input_ids, attention_mask=attention_mask)
+            loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+            total_loss += loss.item()
+    avg_loss = total_loss / len(val_loader)
+    logger.info(f"Validation loss: {avg_loss:.4f}")
+    return avg_loss
 
 if __name__ == "__main__":
     main()

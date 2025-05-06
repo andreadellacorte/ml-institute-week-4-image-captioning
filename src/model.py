@@ -77,10 +77,15 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.max_len = max_len
         self.d_model = d_model
 
+        # Unfreeze text embeddings for adaptation
         for p in self.clip.vision_model.parameters():
             p.requires_grad = False
         for p in self.clip.text_model.embeddings.parameters():
-            p.requires_grad = False
+            p.requires_grad = True  # Unfreeze text embeddings
+
+        # Add a learnable position embedding for the image token
+        self.img_pos_embedding = nn.Parameter(torch.zeros(1, 1, d_model))
+        nn.init.trunc_normal_(self.img_pos_embedding, std=0.02)
 
         self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
         self.decoder_blocks = nn.ModuleList([
@@ -91,80 +96,71 @@ class UnifiedAutoregressiveDecoder(nn.Module):
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
             vis_out = self.clip.vision_model(pixel_values=pixel_values)
-        pooled = vis_out.last_hidden_state.mean(dim=1)
+        # Use pooled_output (CLS token) instead of mean pooling
+        pooled = vis_out.pooler_output  # (B, D)
         return self.image_proj(pooled).unsqueeze(1)  # (B, 1, D)
 
     def get_text_input_embeddings(self, input_ids):
-        with torch.no_grad():
-            token_emb = self.clip.text_model.embeddings.token_embedding(input_ids)
-            pos_ids = torch.arange(0, input_ids.shape[1], device=input_ids.device).unsqueeze(0)
-            pos_emb = self.clip.text_model.embeddings.position_embedding(pos_ids)
+        # Unfrozen text embeddings
+        token_emb = self.clip.text_model.embeddings.token_embedding(input_ids)
+        pos_ids = torch.arange(0, input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+        pos_emb = self.clip.text_model.embeddings.position_embedding(pos_ids + 1)  # shift by 1 for image token
         return token_emb + pos_emb  # (B, T, D)
 
     def causal_mask(self, sz, device):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
 
-    def forward(self, images, input_ids):
-        image_emb = self.get_image_embedding(images)         # (B, 1, D)
-        text_emb = self.get_text_input_embeddings(input_ids)       # (B, T, D)
-        
-        # Fix: Ensure text_emb is the correct shape
-        if len(text_emb.shape) == 4:  # If shape is [B, 1, T, D]
-            text_emb = text_emb.squeeze(1)  # Change to [B, T, D]
-
-        x = torch.cat([image_emb, text_emb], dim=1)                # (B, 1+T, D)
-
+    def forward(self, images, input_ids, attention_mask=None):
+        # Use CLIPProcessor for image normalization
+        with torch.no_grad():
+            processed = self.processor(images=[img for img in images], return_tensors="pt")
+            pixel_values = processed["pixel_values"].to(images.device)
+        image_emb = self.get_image_embedding(pixel_values)  # (B, 1, D)
+        text_emb = self.get_text_input_embeddings(input_ids)  # (B, T, D)
+        # Add image position embedding
+        image_emb = image_emb + self.img_pos_embedding
+        x = torch.cat([image_emb, text_emb], dim=1)  # (B, 1+T, D)
         seq_len = x.size(1)
+        # Causal mask
         mask = self.causal_mask(seq_len, x.device)
-
+        # Padding mask
+        if attention_mask is not None:
+            pad_mask = F.pad(attention_mask, (1, 0), value=1)  # Add 1 for image token
+            mask = mask * pad_mask[:, None, None, :]
         for block in self.decoder_blocks:
             x = block(x, mask)
-
-        # Apply language model head to get logits
         logits = self.lm_head(x[:, 1:, :])  # Predict only text tokens, exclude image token
-        
         return logits
-    
-    def generate_caption(self, images, max_new_tokens=50):
-        caption_tokens = self.generate_caption_token(images, max_new_tokens)
+
+    def generate_caption(self, images, max_new_tokens=50, decoding="greedy", num_beams=3, top_k=0, top_p=1.0):
+        caption_tokens = self.generate_caption_token(images, max_new_tokens, decoding, num_beams, top_k, top_p)
         return self.decode_tokens(caption_tokens)
 
-    def generate_caption_token(self, images, max_new_tokens=50):
+    def generate_caption_token(self, images, max_new_tokens=50, decoding="greedy", num_beams=3, top_k=0, top_p=1.0):
+        # Only greedy and top-k sampling for now
         start_token_id = self.tokenizer.bos_token_id
         eos_token_id = self.tokenizer.eos_token_id
-        if start_token_id is None or eos_token_id is None:
-            raise ValueError("Start or EOS token ID not found in tokenizer.")
-
         device = next(self.parameters()).device
-        
-        # Process images once to get number of samples in batch
         B = images.size(0)
-        
-        # Start with BOS token for each sample in batch
         tokens = torch.full((B, 1), start_token_id, dtype=torch.long, device=device)
-        
-        # Generate up to max_new_tokens
         for _ in range(max_new_tokens):
-            # Use forward method to get logits for current tokens
             logits = self.forward(images, tokens)
-            
-            # Get prediction for next token (last position only)
             next_token_logits = logits[:, -1, :]
-            next_token = next_token_logits.argmax(dim=-1, keepdim=True)
-            
-            # Add the predicted token to our sequence
+            if decoding == "greedy":
+                next_token = next_token_logits.argmax(dim=-1, keepdim=True)
+            elif decoding == "topk":
+                probs = F.softmax(next_token_logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, k=top_k, dim=-1)
+                next_token = topk_indices[torch.arange(B), torch.multinomial(topk_probs, 1).squeeze(-1)].unsqueeze(-1)
+            else:
+                next_token = next_token_logits.argmax(dim=-1, keepdim=True)
             tokens = torch.cat([tokens, next_token], dim=1)
-            
-            # Stop if all sequences have generated EOS token
             if (next_token == eos_token_id).all():
                 break
-            
-            # Also stop if we've reached the model's maximum length
             if tokens.size(1) >= self.max_len:
                 break
-                
         return tokens
-    
+
     def decode_tokens(self, tokens):
         return self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
 

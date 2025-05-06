@@ -22,7 +22,7 @@ import wandb
 import os
 
 from tqdm import tqdm
-from torch.cuda.amp import GradScaler, autocast  # Added for AMP
+from torch.amp import GradScaler, autocast
 
 # WandB Configuration Settings
 WANDB_CONFIG = {
@@ -89,81 +89,25 @@ SWEEP_CONFIG_SINGLE = {
     }
 }
 
-# Sweep Configuration - Full (for comprehensive exploration)
+# Sweep Configuration for Debugging Slowdown
 SWEEP_CONFIG_FULL = {
     "method": "bayes",
-    "metric": {
-        "name": "train_loss",
-        "goal": "minimize"
-    },
-    "parameters": {
-        "dataset_size": {
-            "values": [10]
-        },
-        "batch_size": {
-            "values": [8]
-        },
-        "learning_rate": {
-            "values": [1e-4]
-        },
-        "num_epochs": {
-            "values": [20]
-        },
-        "optimizer": {
-            "values": ["adam"]
-        },
-        "max_len": {
-            "values": [25]
-        },
-        "step_function": {
-            "values": ["full_sentence"]
-        },
-        "resize_size": {
-            "values": [224]
-        },
-        "normalize": {
-            "values": [False]
-        },
-        "d_model": {
-            "values": [512]
-        },
-        "n_layers": {
-            "values": [6]
-        },
-        "n_heads": {
-            "values": [8]
-        },
-        "d_ff": {
-            "values": [2048]
-        },
-        "seed": {
-            "values": [3047]
-        },
-        "dropout_prob": {  # Added dropout_prob
-            "values": [0.0, 0.1, 0.2]
-        },
-    }
-}
-
-# Sweep Configuration for Debugging Slowdown
-SWEEP_CONFIG_DEBUG_SLOWDOWN = {
-    "method": "grid",  # Grid search for a single specific configuration
     "metric": {
         "name": "validation_loss",
         "goal": "minimize"
     },
     "parameters": {
         "dataset_size": {
-            "values": [10, 50, 100, 500, 1000, 5000, "full"]
+            "values": [5000]
         },
         "batch_size": {
-            "value": 256
+            "values": [8, 16, 32, 64, 128, 256, 512]
         },
         "learning_rate": {
             "value": 1e-4  # Fixed learning rate
         },
         "num_epochs": {
-            "value": [20]  # Reduced epochs for faster debugging turn-around
+            "values": [20]  # Reduced epochs for faster debugging turn-around
         },
         "optimizer": {
             "value": "adam"
@@ -179,16 +123,13 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
             "values": [64, 128, 256, 512, 1024, 2048]
         },
         "n_layers": {
-            "value": [1, 2, 4]
+            "values": [1, 2, 4]
         },
         "n_heads": {
             "values": [1, 2, 4, 8, 16]
         },
         "d_ff": {
-            "value": [64, 128, 256, 512, 1024, 2048]
-        },
-        "seed": {
-            "value": 42
+            "values": [64, 128, 256, 512, 1024, 2048]
         },
         "dropout_prob": {
             "values": [0.0, 0.01, 0.1]
@@ -199,7 +140,9 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
     }
 }
 
-sweep_config = SWEEP_CONFIG_DEBUG_SLOWDOWN  # Use the debug config
+processed_image_tensors = {}
+
+sweep_config = SWEEP_CONFIG_FULL  # Use the debug config
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -259,7 +202,7 @@ def train_model():
     logger.info(f"Actual batch_size from config: {config.batch_size}")
     
     # Set random seed
-    set_seed(config.seed)
+    set_seed(42)
 
     # Load the data
     with open(PROCESSED_DATA_DIR / f"flickr30k/{config.dataset_size}_images.pkl", "rb") as f:
@@ -304,15 +247,21 @@ def train_model():
     if device.type == 'cuda':
         logger.info(f"Initial GPU Memory: Allocated = {torch.cuda.memory_allocated(device) / 1024**2:.2f} MB, Reserved = {torch.cuda.memory_reserved(device) / 1024**2:.2f} MB")
 
-    dataset = ImageCaptioningDataset(
+    train_dataset = ImageCaptioningDataset(
         train_images,
         captions,
-        model)
+        model,
+        processed_image_tensors)
+    
+    processed_image_tensors.update(train_dataset.processed_image_tensors)
 
     test_dataset = ImageCaptioningDataset(
         test_images,
         captions,
-        model)
+        model,
+        processed_image_tensors)
+
+    processed_image_tensors.update(test_dataset.processed_image_tensors)
 
     logger.info("Dataset loaded")
 
@@ -321,7 +270,7 @@ def train_model():
     pin_memory = True if device.type == 'cuda' else False
 
     dataloader = torch.utils.data.DataLoader(
-        dataset, 
+        train_dataset, 
         batch_size=config.batch_size, 
         shuffle=True,
         num_workers=num_workers,
@@ -447,7 +396,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
                 timings = returned_timings # Update with actual timings from the step function
             
         total_loss += loss_val # loss_val is item(), so it's detached from graph
-        batch_end_time = time.time()
+
         progress_bar.set_postfix(loss=f"{loss_val:.4f}")
         if batch_idx % 100 == 0: # Log timings every 100 batches
             logger.info(f"Batch {batch_idx}: Data to device = {data_to_device_time:.4f}s, Step func = {timings.get('total_step_time', 0.0):.4f}s (Forward: {timings.get('forward_time', 0.0):.4f}s, Loss: {timings.get('loss_time', 0.0):.4f}s, Backward: {timings.get('backward_time', 0.0):.4f}s, Optim: {timings.get('optim_time', 0.0):.4f}s)")

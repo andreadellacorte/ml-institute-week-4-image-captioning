@@ -5,8 +5,11 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 
+import string
+from tqdm import tqdm
+
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, model):
+    def __init__(self, images, captions, model, processed_image_tensors):
         self.images = images # This is the original images dict with bytes and caption_ids
         self.captions = captions
         self.tokenizer = model.tokenizer
@@ -19,8 +22,11 @@ class ImageCaptioningDataset(Dataset):
         self.processor = model.processor  # Use CLIPProcessor for image normalization
 
         # Pre-process and store normalized images with a progress bar
-        self.processed_image_tensors = {}
+        self.processed_image_tensors = processed_image_tensors
+
         for img_id, img_content in tqdm(self.images.items(), desc="Processing images"):
+            if img_id in self.processed_image_tensors:
+                continue
             image_pil = Image.open(io.BytesIO(img_content["image_bytes"]))
             self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
 
@@ -28,20 +34,16 @@ class ImageCaptioningDataset(Dataset):
         self.data = []
         for img_id, img_data in tqdm(self.images.items(), desc="Preparing dataset"):
             for caption_id in img_data["caption_ids"]:
-            self.data.append({
-                "img_id": img_id,
-                "caption_id": caption_id
-                # "image_bytes" field is removed from items in self.data,
-                # as it will be fetched from self.images[img_id]["image_bytes"] in __getitem__
-            })
+                self.data.append({
+                    "img_id": img_id,
+                    "caption_id": caption_id
+                })
     
     def __len__(self):
         return len(self.data)
     
     def clean_text(self, text):
-        # Less aggressive cleaning: keep alphanum and basic punctuation
-        import string
-from tqdm import tqdm
+        # keep only alphanum
         allowed = set(string.ascii_letters + string.digits + " ")
         return ''.join([c for c in text if c in allowed]).strip()
     
@@ -58,19 +60,6 @@ from tqdm import tqdm
         
         caption = self.captions[caption_id]["caption"]
         caption = self.clean_text(caption)
-
-        # Tokenize the core caption content
-        tokenized_content = self.tokenizer(
-            caption,
-            add_special_tokens=False, # Do not add BOS/EOS here
-            return_tensors="pt"
-        ).input_ids[0]
-
-        # Truncate tokenized_content if it's too long to fit BOS and EOS
-        if tokenized_content.size(0) > self.max_len - 2:
-            tokenized_content = tokenized_content[:self.max_len - 2]
-        
-        content_len = tokenized_content.size(0)
 
         # Prepare input_ids: [BOS, content_tokens, PAD...]
         # The tokenizer should add BOS automatically if configured, 
@@ -101,35 +90,6 @@ from tqdm import tqdm
         # Find the actual tokens (not BOS, not PAD)
         # CLIPTokenizer adds BOS at the beginning and EOS at the end if text fits.
         # Example: BOS t1 t2 EOS PAD PAD -> t1 t2 EOS PAD PAD PAD
-        
-        # Find the first PAD token in input_ids, or end of sequence
-        first_pad_idx = self.max_len
-        eos_idx = self.max_len
-        
-        # Search for EOS and PAD in _input_ids
-        input_ids_list = _input_ids.tolist()
-        try:
-            eos_idx = input_ids_list.index(self.tokenizer.eos_token_id) # Corrected: use self.tokenizer.eos_token_id
-        except ValueError:
-            # EOS not found, sequence might be truncated before EOS or completely filled
-            pass
-
-        try:
-            first_pad_idx = input_ids_list.index(self.pad_token_id) # This was already correct (self.pad_token_id is assigned in __init__)
-        except ValueError:
-            # No PAD token, sequence is full
-            pass
-
-        # The actual content for labels starts after BOS and ends before the first PAD or at EOS
-        # If BOS is token 0, content starts at 1.
-        # If EOS is present, content for labels ends at EOS.
-        # If no EOS but PAD is present, content ends before PAD.
-        # If neither, content is full length - 1 (excluding BOS for label start).
-
-        # Content for labels: tokens from _input_ids[1:] up to EOS or first PAD
-        # Target length for labels is up to where EOS is, or where padding begins in input.
-        # Example _input_ids: [BOS, t1, t2, t3, EOS, PAD, PAD]
-        # We want _label_ids: [t1, t2, t3, EOS, PAD, PAD, PAD] (ignore_index for PADs)
         
         # Effective length of the tokenized sequence (including BOS and EOS if present, excluding PAD)
         effective_len = torch.sum(_attention_mask).item()

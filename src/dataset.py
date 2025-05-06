@@ -5,24 +5,22 @@ from pathlib import Path
 from loguru import logger
 
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, bos_token, eos_token, max_length):
-        self.max_length = max_length
-        
+    def __init__(self, images, captions, model):
         self.images = images
-            
         self.captions = captions
 
-        self.bos_token = bos_token
-        self.eos_token = eos_token
+        self.max_length = model.max_length
+        self.bos_token = model.tokenizer.bos_token
+        self.eos_token = model.tokenizer.eos_token
         
-        self.samples = []
+        self.data = []
+
         for img_id, img_data in self.images.items():
             for caption_id in img_data["caption_ids"]:
-                if caption_id in self.captions:
-                    self.samples.append({
-                        "img_id": img_id,
-                        "caption_id": caption_id
-                    })
+                self.data.append({
+                    "img_id": img_id,
+                    "caption_id": caption_id
+                })
         
         logger.info(f"Created dataset with {len(self.samples)} samples")
     
@@ -30,7 +28,7 @@ class ImageCaptioningDataset(Dataset):
         return len(self.samples)
     
     def __getitem__(self, idx):
-        item = self.samples[idx]
+        item = self.data[idx]
 
         img_id = item["img_id"]
         caption_id = item["caption_id"]
@@ -42,3 +40,7 @@ class ImageCaptioningDataset(Dataset):
         label = f"{caption} {self.bos_token}"
         
         return {
+            "image": image,
+            "input_text": input_text,
+            "label": label
+        }

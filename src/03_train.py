@@ -80,11 +80,46 @@ def main():
     num_epochs = 5
 
     for epoch in range(num_epochs):
-        loss = train_one_epoch(model, dataloader, optimizer, criterion)
+        loss = train_one_epoch_full_sentence(model, dataloader, optimizer, criterion)
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss:.4f}")
         evaluate(model, test_images, captions)
 
-def train_one_epoch(model, dataloader, optimizer, criterion):
+def train_one_epoch_full_sentence(model, dataloader, optimizer, criterion):
+    model.train()
+    total_loss = 0
+    progress_bar = tqdm(dataloader, desc="Training", leave=False)
+    device = next(model.parameters()).device
+    
+    for batch in progress_bar:
+        images = batch["image_bytes"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        label_ids = batch["label_ids"].to(device)
+        
+        # Zero gradients
+        optimizer.zero_grad()
+        
+        # Forward pass
+        outputs = model(images, input_ids)
+        
+        # Calculate loss
+        loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+        
+        # Backward pass
+        loss.backward()
+        
+        # Update parameters
+        optimizer.step()
+        
+        # Track total loss
+        total_loss += loss.item()
+        
+        # Update progress bar with non-zero loss
+        progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+    
+    # Return average loss over all batches
+    return total_loss / len(dataloader)
+
+def train_one_epoch_logit_by_logit(model, dataloader, optimizer, criterion):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc="Training", leave=False)

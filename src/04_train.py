@@ -93,13 +93,13 @@ SWEEP_CONFIG_FULL = {
             "values": ["100"]
         },
         "batch_size": {
-            "values": [8, 16, 32]
+            "values": [8]
         },
         "learning_rate": {
-            "values": [1e-3]
+            "values": [1e-4]
         },
         "num_epochs": {
-            "values": [1]
+            "values": [5]
         },
         "optimizer": {
             "values": ["adam"]
@@ -211,18 +211,12 @@ def train_model():
     dataset = ImageCaptioningDataset(
         train_images,
         captions,
-        model,
-        max_len=config.max_len,
-        resize_size=config.resize_size,
-        normalize_image=config.normalize)
+        model)
 
     test_dataset = ImageCaptioningDataset(
         test_images,
         captions,
-        model,
-        max_len=config.max_len,
-        resize_size=config.resize_size,
-        normalize_image=config.normalize)
+        model)
 
     logger.info("Dataset loaded")
 

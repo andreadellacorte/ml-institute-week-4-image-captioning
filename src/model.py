@@ -162,7 +162,19 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         return tokens
 
     def decode_tokens(self, tokens):
-        return self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
+        # Accepts either a 1D or 2D tensor/array
+        import torch
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.cpu().numpy()
+        if len(tokens.shape) == 1:
+            # Single sequence
+            tokens = tokens.tolist()
+            # Remove padding tokens
+            tokens = [t for t in tokens if t != self.tokenizer.pad_token_id]
+            return self.tokenizer.decode(tokens, skip_special_tokens=True)
+        else:
+            # Batch
+            return self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
 
 if __name__ == "__main__":
     with open(PROCESSED_DATA_DIR / "flickr30k/100_images.pkl", "rb") as f:

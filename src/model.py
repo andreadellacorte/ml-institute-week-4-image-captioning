@@ -1,37 +1,169 @@
-# load one image from data/processed/flickr30k/1_images.pkl
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import CLIPModel, CLIPTokenizer, CLIPProcessor
+from PIL import Image
+
+from src.config import PROCESSED_DATA_DIR
+
+import pprint
+
+import random
+
+import pickle
 
 from torchvision.transforms import ToTensor
 
-import pickle
-import pprint
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
 
-import pprint
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
 
-import pickle
+    def forward(self, x, mask=None):
+        B, T, D = x.size()
+        H = self.n_heads
+        q = self.q_proj(x).view(B, T, H, -1).transpose(1, 2)  # (B, H, T, D/H)
+        k = self.k_proj(x).view(B, T, H, -1).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, H, -1).transpose(1, 2)
 
-from loguru import logger
-import typer
+        scores = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (B, H, T, T)
 
-from src.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float("-inf"))
 
-app = typer.Typer()
+        attn = F.softmax(scores, dim=-1)
+        out = attn @ v  # (B, H, T, D/H)
+        out = out.transpose(1, 2).reshape(B, T, D)
+        return self.out_proj(out)
 
-SIZES = {
-    1: "1",
-    50: "50",
-    100: "100",
-    500: "500",
-    1000: "1k",
-    5000: "5k",
-    10000: "10k",
-}
 
-@app.command()
-def main():
+class DecoderBlock(nn.Module):
+    def __init__(self, d_model=512, n_heads=8, d_ff=2048, dropout=0.1):
+        super().__init__()
+        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
 
-    import transformers
+    def forward(self, x, mask=None):
+        x = x + self.attn(self.norm1(x), mask)
+        x = x + self.ff(self.norm2(x))
+        return x
 
+
+class UnifiedAutoregressiveDecoder(nn.Module):
+    def __init__(
+        self,
+        clip_model_name="openai/clip-vit-base-patch32",
+        vocab_size=49408,
+        max_len=77,
+        d_model=512,
+        n_layers=6,
+        n_heads=8,
+        d_ff=2048,
+    ):
+        super().__init__()
+        self.clip = CLIPModel.from_pretrained(clip_model_name)
+        self.tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
+        self.processor = CLIPProcessor.from_pretrained(clip_model_name)
+        self.max_len = max_len
+        self.d_model = d_model
+
+        for p in self.clip.vision_model.parameters():
+            p.requires_grad = False
+        for p in self.clip.text_model.embeddings.parameters():
+            p.requires_grad = False
+
+        self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
+        self.decoder_blocks = nn.ModuleList([
+            DecoderBlock(d_model, n_heads, d_ff) for _ in range(n_layers)
+        ])
+        self.lm_head = nn.Linear(d_model, vocab_size)
+
+    def preprocess_images(self, images):
+        if isinstance(images, Image.Image):
+            images = [images]
+        inputs = self.processor(images=images, return_tensors="pt")
+        return inputs["pixel_values"].to(next(self.parameters()).device)
+
+    def get_image_embedding(self, pixel_values):
+        with torch.no_grad():
+            vis_out = self.clip.vision_model(pixel_values=pixel_values)
+        pooled = vis_out.last_hidden_state.mean(dim=1)
+        return self.image_proj(pooled).unsqueeze(1)  # (B, 1, D)
+
+    def get_text_input_embeddings(self, input_ids):
+        with torch.no_grad():
+            token_emb = self.clip.text_model.embeddings.token_embedding(input_ids)
+            pos_ids = torch.arange(0, input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+            pos_emb = self.clip.text_model.embeddings.position_embedding(pos_ids)
+        return token_emb + pos_emb  # (B, T, D)
+
+    def causal_mask(self, sz, device):
+        return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
+
+    def forward(self, images, input_ids):
+        pixel_values = self.preprocess_images(images)
+        image_emb = self.get_image_embedding(pixel_values)         # (B, 1, D)
+        text_emb = self.get_text_input_embeddings(input_ids)       # (B, T, D)
+
+        x = torch.cat([image_emb, text_emb], dim=1)                # (B, 1+T, D)
+        seq_len = x.size(1)
+        mask = self.causal_mask(seq_len, x.device)
+
+        for block in self.decoder_blocks:
+            x = block(x, mask)
+
+        return self.lm_head(x[:, 1:, :])  # Predict only text tokens
+
+    def generate_tokens(self, images, max_new_tokens=50):
+
+        start_token_id = self.tokenizer.bos_token_id
+        eos_token_id = self.tokenizer.eos_token_id
+        if start_token_id is None or eos_token_id is None:
+            raise ValueError("Start or EOS token ID not found in tokenizer.")
+
+        pixel_values = self.preprocess_images(images)
+        device = next(self.parameters()).device
+        B = pixel_values.size(0)
+        image_emb = self.get_image_embedding(pixel_values.to(device))
+
+        tokens = torch.full((B, 1), start_token_id, dtype=torch.long, device=device)
+
+        for _ in range(max_new_tokens):
+            text_emb = self.get_text_input_embeddings(tokens)
+            x = torch.cat([image_emb, text_emb], dim=1)
+            mask = self.causal_mask(x.size(1), device)
+
+            for block in self.decoder_blocks:
+                x = block(x, mask)
+
+            logits = self.lm_head(x[:, -1, :])  # (B, vocab)
+            next_token = logits.argmax(dim=-1, keepdim=True)
+            tokens = torch.cat([tokens, next_token], dim=1)
+
+            if (next_token == eos_token_id).all():
+                break
+
+        return tokens
+    
+    def decode_tokens(self, tokens):
+        return self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
+
+if __name__ == "__main__":
     with open(PROCESSED_DATA_DIR / "flickr30k/100_images.pkl", "rb") as f:
         images = pickle.load(f)
 
@@ -39,49 +171,62 @@ def main():
 
     with open(PROCESSED_DATA_DIR / "flickr30k/100_captions.pkl", "rb") as f:
         captions = pickle.load(f)
+    
+    # Convert dictionary to list for proper splitting
+    image_ids = list(images.keys())
+    # random.shuffle(image_ids)
+    
+    # Calculate split indices
+    train_size = int(len(image_ids) * 0.8)
+    test_size = int(len(image_ids) * 0.1)
+    
+    # Split the image IDs
+    train_ids = image_ids[:train_size]
+    test_ids = image_ids[train_size:train_size+test_size]
+    val_ids = image_ids[train_size+test_size:]
+    
+    # Create dictionaries for each split
+    train_images = {id: images[id] for id in train_ids}
+    test_images = {id: images[id] for id in test_ids}
+    val_images = {id: images[id] for id in val_ids}
+    
+    print(f"Train images: {len(train_images)}")
+    print(f"Test images: {len(test_images)}")
+    print(f"Validation images: {len(val_images)}")
 
-    pprint.pprint(captions[0])
+    model = UnifiedAutoregressiveDecoder()
+    
+    # Process the first image
+    first_id = list(images.keys())[0]
+    image_tensor = ToTensor()(images[first_id]["image"]).unsqueeze(0)
+    
+    # Get first caption ID and convert to input_ids that the model expects
+    caption_id = images[first_id]['caption_ids'][0]
+    caption_text = captions[caption_id]['caption']
+    
+    # Use the model's tokenizer to convert text to input_ids
+    input_ids = model.tokenizer(caption_text, return_tensors="pt").input_ids
+    
+    # Forward pass through the model
+    result = model(image_tensor, input_ids)
 
-    image = ToTensor()(images[0]["image"]).unsqueeze(0)
-    print(image.shape)
+    print(f"{result}")
 
-    # pass the image through the CLIP Model Vision Encoder
-    model_name = "openai/clip-vit-base-patch32"
-    
-    # Load the CLIP model
-    logger.info(f"Loading CLIP model: {model_name}")
-    processor = transformers.CLIPProcessor.from_pretrained(model_name)
-    model = transformers.CLIPModel.from_pretrained(model_name)
-    
-    # Process the image with the CLIP processor
-    inputs = processor(images=images[0]["image"], return_tensors="pt", padding=True)
-    
-    # Get the image features from the vision encoder
-    with torch.no_grad():
-        image_features = model.get_image_features(**inputs)
-        
-    logger.info(f"Image features shape: {image_features.shape}")
-    
-    # Process the captions with the CLIP processor
-    text = [captions[caption_id]["caption"] for caption_id in captions.keys()]
-    
-    text_inputs = processor(text=text, return_tensors="pt", padding=True)
-    
-    with torch.no_grad():
-        text_features = model.get_text_features(**text_inputs)
-        
-    logger.info(f"Text features shape: {text_features.shape}")
-    
-    # Compute similarity between image and text features
-    similarity = torch.nn.functional.cosine_similarity(image_features, text_features)
-    logger.info(f"Similarity scores: {similarity}")
-    
-    # Get the top 10 captions with highest similarity scores
-    top_k = 10
-    top_indices = torch.topk(similarity, top_k).indices
-    logger.info("Top 10 most similar captions:")
-    for idx in top_indices:
-        logger.info(f"Caption: {text[idx]} | Similarity score: {similarity[idx].item()}")
+    # a generate example
 
-if __name__ == "__main__":
-    app()
+    start_token_id = model.tokenizer.bos_token
+    eos_token_id = model.tokenizer.eos_token
+
+    print(f"Start token ID: {start_token_id}")
+    print(f"EOS token ID: {eos_token_id}")
+
+    generated_tokens = model.generate_tokens(image_tensor, max_new_tokens=50)
+
+    print(f"Generated tokens: {generated_tokens}")
+    print(f"Generated tokens shape: {generated_tokens.shape}")
+
+    # convert generated tokens to text
+    generated_text = model.decode_tokens(generated_tokens)
+
+    print(f"Generated text: {generated_text}")
+    print(f"Generated text shape: {len(generated_text)}")

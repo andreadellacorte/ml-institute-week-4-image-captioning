@@ -84,9 +84,9 @@ def main():
     logger.info(f"Input token ids: {sample['input_ids']}")
 
     # Overfit loop
-    for epoch in range(20):  # Reduced from 300 to 20
+    for epoch in range(100):  # Increased from 20 to 100
         loss = train_one_epoch(model, dataloader, optimizer, criterion, full_sentence_step)
-        logger.info(f"[Overfit] Epoch {epoch+1}/20, Loss: {loss:.4f}")
+        logger.info(f"[Overfit] Epoch {epoch+1}/100, Loss: {loss:.4f}")
         # Print generated captions every epoch
         model.eval()
         with torch.no_grad():
@@ -126,6 +126,15 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     optimizer.zero_grad()
     outputs = model(images, input_ids, attention_mask=attention_mask)
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+
+    length_penalty_weight = 0.5
+
+    # Apply length penalty
+    length_penalty = length_penalty_weight * (label_ids != model.tokenizer.pad_token_id).sum(dim=1).float()
+    loss = loss + length_penalty.mean()
+
+    # Backpropagation
+
     loss.backward()
     optimizer.step()
     return loss

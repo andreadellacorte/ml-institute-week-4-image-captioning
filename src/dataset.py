@@ -7,7 +7,7 @@ from PIL import Image
 
 class ImageCaptioningDataset(Dataset):
     def __init__(self, images, captions, model):
-        self.images = images
+        self.images = images # This is the original images dict with bytes and caption_ids
         self.captions = captions
         self.tokenizer = model.tokenizer
         self.bos_token = model.tokenizer.bos_token
@@ -17,13 +17,21 @@ class ImageCaptioningDataset(Dataset):
 
         self.max_len = model.max_len
         self.processor = model.processor  # Use CLIPProcessor for image normalization
+
+        # Pre-process and store normalized images
+        self.processed_image_tensors = {}
+        for img_id, img_content in self.images.items():
+            image_pil = Image.open(io.BytesIO(img_content["image_bytes"]))
+            self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
+
         self.data = []
-        for img_id, img_data in self.images.items():
+        for img_id, img_data in self.images.items(): # Iterate original self.images to get caption_ids
             for caption_id in img_data["caption_ids"]:
                 self.data.append({
                     "img_id": img_id,
-                    "caption_id": caption_id,
-                    "image_bytes": img_data["image_bytes"]  # Store original bytes for visualization
+                    "caption_id": caption_id
+                    # "image_bytes" field is removed from items in self.data,
+                    # as it will be fetched from self.images[img_id]["image_bytes"] in __getitem__
                 })
     
     def __len__(self):
@@ -32,16 +40,19 @@ class ImageCaptioningDataset(Dataset):
     def clean_text(self, text):
         # Less aggressive cleaning: keep alphanum and basic punctuation
         import string
-        allowed = set(string.ascii_letters + string.digits + " .,'-?!")
+        allowed = set(string.ascii_letters + string.digits + " ")
         return ''.join([c for c in text if c in allowed]).strip()
     
     def __getitem__(self, idx):
-        item = self.data[idx]
+        item = self.data[idx] # item now only contains img_id and caption_id
         img_id = item["img_id"]
         caption_id = item["caption_id"]
-        image = Image.open(io.BytesIO(self.images[img_id]["image_bytes"]))
-        # Use CLIPProcessor for normalization
-        image_tensor = self.processor(images=image, return_tensors="pt")["pixel_values"][0]
+
+        # Retrieve pre-processed image tensor
+        image_tensor = self.processed_image_tensors[img_id]
+        
+        # Retrieve original image bytes from self.images (the original structure)
+        image_bytes = self.images[img_id]["image_bytes"]
         
         caption = self.captions[caption_id]["caption"]
         caption = self.clean_text(caption)
@@ -145,7 +156,7 @@ class ImageCaptioningDataset(Dataset):
 
         return {
             "image_tensor": image_tensor,
-            "image_bytes": item["image_bytes"],
+            "image_bytes": image_bytes, # Sourced from self.images via img_id
             "input_ids": _input_ids,
             "label_ids": _label_ids,
             "attention_mask": _attention_mask # Original attention mask for input_ids

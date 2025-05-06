@@ -150,16 +150,16 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
     },
     "parameters": {
         "dataset_size": {
-            "value": "1000"
+            "value": "5000"
         },
         "batch_size": {
-            "value": 16
+            "value": 256
         },
         "learning_rate": {
             "value": 1e-4  # Fixed learning rate
         },
         "num_epochs": {
-            "value": 3  # Reduced epochs for faster debugging turn-around
+            "value": 5  # Reduced epochs for faster debugging turn-around
         },
         "optimizer": {
             "value": "adam"
@@ -170,36 +170,32 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
         "step_function": {
             "value": "full_sentence"
         },
-        "resize_size": {
-            "value": 224
-        },
-        "normalize": {
-            "value": False
-        },
         # Fixed small model architecture
         "d_model": {
             "value": 256
         },
         "n_layers": {
-            "value": 4
+            "value": 2
         },
         "n_heads": {
-            "value": 4
+            "value": 16
         },
         "d_ff": {
-            "value": 1024
+            "value": 256
         },
         "seed": {
             "value": 42
         },
         "dropout_prob": {
-            "value": 0.1
+            "value": 0.0
         },
         "length_penalty_weight": {
-            "value": 0.01
+            "value": 0.5
         }
     }
 }
+
+os.environ["WANDB_MODE"] = "disabled"  # Disable wandb for overfit test
 
 sweep_config = SWEEP_CONFIG_DEBUG_SLOWDOWN  # Use the debug config
 

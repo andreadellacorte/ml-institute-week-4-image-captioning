@@ -11,18 +11,151 @@ from loguru import logger
 import pickle
 import random
 import torch
+import wandb
+import os
 
 from tqdm import tqdm
 
-SIZES = {
-    1: "1",
-    50: "50",
-    100: "100",
-    500: "500",
-    1000: "1k",
-    5000: "5k",
-    10000: "10k",
+# WandB Configuration Settings
+WANDB_CONFIG = {
+    # Set to 'online', 'offline', or 'disabled'
+    "mode": "online",
+    "project": "mlx7-week-4-image-captioning",
+    "entity": None,  # Set to your wandb username/team or None
 }
+
+# Default training configuration
+DEFAULT_CONFIG = {
+    "seed": 3047,
+    "batch_size": 32,
+    "learning_rate": 1e-4,
+    "num_epochs": 5,
+    "optimizer": "adam",
+    "max_len": 22,
+    "step_function": "full_sentence",
+    "dataset_size": 1000,
+    "resize_size": 224,
+    "normalize": True,
+    "d_model": 512,
+    "n_layers": 6,
+    "n_heads": 8,
+    "d_ff": 2048,
+}
+
+# Sweep Configuration - Single (for quick targeted sweeps)
+SWEEP_CONFIG_SINGLE = {
+    "method": "random",
+    "metric": {
+        "name": "train_loss",
+        "goal": "minimize"
+    },
+    "parameters": {
+        "dataset_size": {
+            "values": [500, 1000]
+        },
+        "batch_size": {
+            "values": [8, 16, 32]
+        },
+        "learning_rate": {
+            "values": [1e-4, 5e-4]
+        },
+        "num_epochs": {
+            "value": 2  # Fewer epochs for quick sweep
+        },
+        "optimizer": {
+            "value": "adam"
+        },
+        "max_len": {
+            "value": 22
+        },
+        "step_function": {
+            "value": "full_sentence"
+        },
+        "resize_size": {
+            "value": 224
+        },
+        "normalize": {
+            "value": True
+        },
+        # Adding model architecture parameters
+        "d_model": {
+            "value": 512
+        },
+        "n_layers": {
+            "value": 6
+        },
+        "n_heads": {
+            "value": 8
+        },
+        "d_ff": {
+            "value": 2048
+        },
+        "seed": {
+            "value": 3047
+        }
+    }
+}
+
+# Sweep Configuration - Full (for comprehensive exploration)
+SWEEP_CONFIG_FULL = {
+    "method": "bayes",
+    "metric": {
+        "name": "train_loss",
+        "goal": "minimize"
+    },
+    "parameters": {
+        "dataset_size": {
+            "values": [500]
+        },
+        "batch_size": {
+            "values": [8]
+        },
+        "learning_rate": {
+            "distribution": "log_uniform_values",
+            "min": 1e-5,
+            "max": 1e-3
+        },
+        "num_epochs": {
+            "values": [3]
+        },
+        "optimizer": {
+            "values": ["adam"]
+        },
+        "max_len": {
+            "values": [16, 22, 32]
+        },
+        "step_function": {
+            "values": ["full_sentence"]
+        },
+        "resize_size": {
+            "values": [224]
+        },
+        "normalize": {
+            "values": [True]
+        },
+        # Adding model architecture parameters
+        "d_model": {
+            "values": [512]
+        },
+        "n_layers": {
+            "values": [6]
+        },
+        "n_heads": {
+            "values": [8]
+        },
+        "d_ff": {
+            "values": [2048]
+        },
+        "seed": {
+            "values": [3047]
+        },
+    }
+}
+
+sweep_config = SWEEP_CONFIG_FULL
+
+# Number of runs to perform in the sweep
+SWEEP_RUNS = 1
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -33,69 +166,144 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 def main():
-    set_seed(3047)
+    """Main function that serves as both regular training entry point and sweep agent."""
+    # Set wandb mode
+    os.environ["WANDB_MODE"] = WANDB_CONFIG["mode"]
 
-    with open(PROCESSED_DATA_DIR / "flickr30k/5000_images.pkl", "rb") as f:
+    # Create the sweep - remove the name parameter
+    sweep_id = wandb.sweep(
+        sweep_config, 
+        project=f"{WANDB_CONFIG['project']}", 
+        entity=WANDB_CONFIG["entity"]
+    )
+        
+    # Start the sweep agent
+    wandb.agent(sweep_id, train_model, count=SWEEP_RUNS)
+
+def train_model():
+    """Train the model with the given configuration."""
+    # Initialize wandb run
+    run = wandb.init(project=WANDB_CONFIG["project"], entity=WANDB_CONFIG["entity"])
+    
+    config = run.config
+    
+    # Set random seed
+    set_seed(config.seed)
+
+    # Load the data
+    with open(PROCESSED_DATA_DIR / "flickr30k/1000_images.pkl", "rb") as f:
         images = pickle.load(f)
 
-    # pprint.pprint(images[0])
-
-    with open(PROCESSED_DATA_DIR / "flickr30k/5000_captions.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "flickr30k/1000_captions.pkl", "rb") as f:
         captions = pickle.load(f)
     
     # Convert dictionary to list for proper splitting
     image_ids = list(images.keys())
-    # random.shuffle(image_ids)
     
     # Calculate split indices
-    train_size = int(len(image_ids) * 0.8)
+    train_size = int(len(image_ids) * 0.9)
     test_size = int(len(image_ids) * 0.1)
     
     # Split the image IDs
     train_ids = image_ids[:train_size]
     test_ids = image_ids[train_size:train_size+test_size]
-    val_ids = image_ids[train_size+test_size:]
     
     # Create dictionaries for each split
     train_images = {id: images[id] for id in train_ids}
     test_images = {id: images[id] for id in test_ids}
-    val_images = {id: images[id] for id in val_ids}
     
     logger.info(f"Train images: {len(train_images)}")
     logger.info(f"Test images: {len(test_images)}")
-    logger.info(f"Validation images: {len(val_images)}")
 
-    model = UnifiedAutoregressiveDecoder()
+    model = UnifiedAutoregressiveDecoder(
+        clip_model_name="openai/clip-vit-base-patch32",
+        max_len=config.max_len,
+        d_model=config.d_model,
+        n_layers=config.n_layers,
+        n_heads=config.n_heads,
+        d_ff=config.d_ff,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    print("Model loaded")
+    logger.info("Model loaded")
 
-    dataset = ImageCaptioningDataset(train_images, captions, model, max_len=22)
+    dataset = ImageCaptioningDataset(
+        train_images,
+        captions,
+        model,
+        max_len=config.max_len,
+        resize_size=config.resize_size,
+        normalize_image=config.normalize)
 
-    print("Dataset loaded")
+    logger.info("Dataset loaded")
 
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
 
-    print("Dataloader loaded")
+    logger.info("Dataloader loaded")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    # Configure optimizer based on config
+    if config.optimizer == "adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    elif config.optimizer == "sgd":
+        optimizer = torch.optim.SGD(model.parameters(), lr=config.learning_rate)
+    elif config.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+        
     criterion = torch.nn.CrossEntropyLoss()
-    num_epochs = 5
-
-    for epoch in range(num_epochs):
-        loss = train_one_epoch(model, dataloader, optimizer, criterion, full_sentence_step)
-        logger.info(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss:.4f}")
-        evaluate(model, test_images, captions)
+    
+    # Select step function based on config
+    if config.step_function == "logit_by_logit":
+        step_function = logit_by_logit_step
+    else:  # Default to full_sentence
+        step_function = full_sentence_step
+    
+    # Training loop
+    batch_times = []
+    
+    for epoch in range(config.num_epochs):
+        epoch_start_time = datetime.now()
+        loss, epoch_batch_times = train_one_epoch(model, dataloader, optimizer, criterion, step_function)
+        epoch_end_time = datetime.now()
+        epoch_duration = (epoch_end_time - epoch_start_time).total_seconds()
+        
+        # Track batch times
+        batch_times.extend(epoch_batch_times)
+        
+        logger.info(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
+        
+        # Log metrics to wandb
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_loss": loss,
+            "epoch_duration": epoch_duration,
+        })
+        
+        # Evaluate model every other epoch to save time
+        if (epoch + 1) % 2 == 0 or epoch == config.num_epochs - 1:
+            evaluate(model, test_images, captions)
+    
+    # Final logging of metrics
+    wandb.log({
+        "final_train_loss": loss,
+    })
+    
+    # Close wandb run
+    wandb.finish()
 
 def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
     device = next(model.parameters()).device
+    batch_times = []
     
     for batch in progress_bar:
+        batch_start = datetime.now()
+        
         images = batch["image_bytes"].to(device)
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
@@ -107,9 +315,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
         
         # Update progress bar with non-zero loss
         progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+        
+        # Track batch processing time
+        batch_end = datetime.now()
+        batch_time = (batch_end - batch_start).total_seconds()
+        batch_times.append(batch_time)
     
-    # Return average loss over all batches
-    return total_loss / len(dataloader)
+    # Return average loss over all batches and batch times
+    return total_loss / len(dataloader), batch_times
 
 def full_sentence_step(model, images, input_ids, label_ids, optimizer, criterion):
     # Zero gradients
@@ -131,12 +344,6 @@ def full_sentence_step(model, images, input_ids, label_ids, optimizer, criterion
 
 def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion):
     seq_length = input_ids.shape[2]
-
-    # Print shapes for debugging    
-    logger.info(f"images shape: {images.shape}")
-    logger.info(f"input_ids shape: {input_ids.shape}")
-    logger.info(f"label_ids shape: {label_ids.shape}")
-    logger.info(f"seq_length: {seq_length}")
     
     # Initialize running loss scalar
     batch_total_loss = 0
@@ -193,12 +400,12 @@ def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterio
 
 def evaluate(model, test_images, test_captions):
     model.eval()
-    print("Evaluation:")
+    logger.info("Evaluation:")
     
     # Create the test dataset
     test_dataset = ImageCaptioningDataset(test_images, test_captions, model)
     
-    # Select 5 random samples from the dataset
+    # Select random samples from the dataset
     num_samples = min(6, len(test_dataset))
     sample_indices = random.sample(range(len(test_dataset)), num_samples)
     
@@ -232,18 +439,18 @@ def evaluate(model, test_images, test_captions):
             ground_truth_captions.append(ground_truth)
     
     # Print results
-    print("\nGenerated captions:")
+    logger.info("\nGenerated captions:")
     for i in range(num_samples):
         logger.info(f"Image {i+1}:")
-        logger.info(f"Generated: {generated_captions[i]}")
+        logger.info(f"Generated: {' '.join(generated_captions[i])}")
         logger.info(f"Ground truth: {ground_truth_captions[i]}")
-        print("---")
+        logger.info("---")
     
     # Import the plotting function
     from src.plots import plot_images_with_captions
     
     # Create a list of captions with both generated and ground truth
-    combined_captions = [f"Generated: {gen}\nGround truth: {gt}" 
+    combined_captions = [f"Generated: {' '.join(gen)}\nGround truth: {gt}" 
                          for gen, gt in zip(generated_captions, ground_truth_captions)]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -253,8 +460,19 @@ def evaluate(model, test_images, test_captions):
         images=original_images,
         captions=combined_captions,
         title="Image Captioning Results",
-        save_path=FIGURES_DIR / f"{timestamp}_caption_results.png"
+        save_path=FIGURES_DIR / f"{timestamp}_caption_results.png",
+        show=False
     )
+    
+    # Log results to wandb
+    if wandb.run is not None:
+        # Create a wandb table for the results
+        caption_table = wandb.Table(columns=["Image", "Generated Caption", "Ground Truth"])
+        for img, gen, gt in zip(original_images, generated_captions, ground_truth_captions):
+            caption_table.add_data(wandb.Image(img), " ".join(gen), gt)
+        
+        # Log the table
+        wandb.log({"caption_examples": caption_table})
 
 def validate(model, val_images, val_captions):
     # Implement your validation loop here

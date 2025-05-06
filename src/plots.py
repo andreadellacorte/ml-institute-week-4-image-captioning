@@ -1,15 +1,10 @@
-from pathlib import Path
-
 from loguru import logger
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import io
 
-from src.config import FIGURES_DIR, PROCESSED_DATA_DIR
-
-def plot_images_with_captions(images, captions, title="Generated Captions", save_path=None):
+def plot_images_with_captions(images, captions, title="Generated Captions", save_path=None, show=False):
     """
     Plot a grid of images with their captions underneath.
     
@@ -69,4 +64,5 @@ def plot_images_with_captions(images, captions, title="Generated Captions", save
         plt.savefig(save_path)
         logger.info(f"Saved plot to {save_path}")
     
-    plt.show()
+    if show:
+        plt.show()

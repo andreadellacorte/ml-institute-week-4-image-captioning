@@ -64,7 +64,6 @@ class UnifiedAutoregressiveDecoder(nn.Module):
     def __init__(
         self,
         clip_model_name="openai/clip-vit-base-patch32",
-        vocab_size=49408,
         max_len=77,
         d_model=512,
         n_layers=6,
@@ -87,7 +86,7 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.decoder_blocks = nn.ModuleList([
             DecoderBlock(d_model, n_heads, d_ff) for _ in range(n_layers)
         ])
-        self.lm_head = nn.Linear(d_model, vocab_size)
+        self.lm_head = nn.Linear(d_model, self.tokenizer.vocab_size)
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():

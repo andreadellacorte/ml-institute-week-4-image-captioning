@@ -10,7 +10,7 @@ import io
 from torchvision import transforms
 
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, model, resize_size=224, max_len=25):
+    def __init__(self, images, captions, model, resize_size, max_len, normalize_image):
         self.images = images
         self.captions = captions
 
@@ -21,11 +21,15 @@ class ImageCaptioningDataset(Dataset):
         self.max_len = max_len
         self.model = model
 
-        self.image_transform = transforms.Compose([
+        transform_list = [
             transforms.Resize((resize_size, resize_size)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
-        ])
+            transforms.ToTensor()
+        ]
+        
+        if normalize_image:
+            transform_list.append(transforms.Normalize([0.5], [0.5]))
+        
+        self.image_transform = transforms.Compose(transform_list)
         
         self.data = []
 

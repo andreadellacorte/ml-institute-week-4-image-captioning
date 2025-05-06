@@ -18,21 +18,22 @@ class ImageCaptioningDataset(Dataset):
         self.max_len = model.max_len
         self.processor = model.processor  # Use CLIPProcessor for image normalization
 
-        # Pre-process and store normalized images
+        # Pre-process and store normalized images with a progress bar
         self.processed_image_tensors = {}
-        for img_id, img_content in self.images.items():
+        for img_id, img_content in tqdm(self.images.items(), desc="Processing images"):
             image_pil = Image.open(io.BytesIO(img_content["image_bytes"]))
             self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
 
+        # Prepare dataset with a progress bar
         self.data = []
-        for img_id, img_data in self.images.items(): # Iterate original self.images to get caption_ids
+        for img_id, img_data in tqdm(self.images.items(), desc="Preparing dataset"):
             for caption_id in img_data["caption_ids"]:
-                self.data.append({
-                    "img_id": img_id,
-                    "caption_id": caption_id
-                    # "image_bytes" field is removed from items in self.data,
-                    # as it will be fetched from self.images[img_id]["image_bytes"] in __getitem__
-                })
+            self.data.append({
+                "img_id": img_id,
+                "caption_id": caption_id
+                # "image_bytes" field is removed from items in self.data,
+                # as it will be fetched from self.images[img_id]["image_bytes"] in __getitem__
+            })
     
     def __len__(self):
         return len(self.data)
@@ -40,6 +41,7 @@ class ImageCaptioningDataset(Dataset):
     def clean_text(self, text):
         # Less aggressive cleaning: keep alphanum and basic punctuation
         import string
+from tqdm import tqdm
         allowed = set(string.ascii_letters + string.digits + " ")
         return ''.join([c for c in text if c in allowed]).strip()
     

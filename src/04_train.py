@@ -10,6 +10,9 @@ from src.dataset import ImageCaptioningDataset
 
 from src.config import PROCESSED_DATA_DIR, FIGURES_DIR
 
+# Import the plotting function
+from src.plots import plot_images_with_captions
+
 from loguru import logger
 
 import pickle
@@ -151,7 +154,7 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
     },
     "parameters": {
         "dataset_size": {
-            "value": "5000"
+            "values": [10, 50, 100, 500, 1000, 5000, "full"]
         },
         "batch_size": {
             "value": 256
@@ -160,7 +163,7 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
             "value": 1e-4  # Fixed learning rate
         },
         "num_epochs": {
-            "value": 5  # Reduced epochs for faster debugging turn-around
+            "value": [20]  # Reduced epochs for faster debugging turn-around
         },
         "optimizer": {
             "value": "adam"
@@ -173,30 +176,28 @@ SWEEP_CONFIG_DEBUG_SLOWDOWN = {
         },
         # Fixed small model architecture
         "d_model": {
-            "value": 512
+            "values": [64, 128, 256, 512, 1024, 2048]
         },
         "n_layers": {
-            "value": 4
+            "value": [1, 2, 4]
         },
         "n_heads": {
-            "value": 16
+            "values": [1, 2, 4, 8, 16]
         },
         "d_ff": {
-            "value": 2048
+            "value": [64, 128, 256, 512, 1024, 2048]
         },
         "seed": {
             "value": 42
         },
         "dropout_prob": {
-            "value": 0.0
+            "values": [0.0, 0.01, 0.1]
         },
         "length_penalty_weight": {
-            "value": 0.5
+            "values": [0.0, 0.01, 0.05, 0.1, 0.25, 0.5]
         }
     }
 }
-
-os.environ["WANDB_MODE"] = "disabled"  # Disable wandb for overfit test
 
 sweep_config = SWEEP_CONFIG_DEBUG_SLOWDOWN  # Use the debug config
 
@@ -570,9 +571,6 @@ def evaluate(model, test_dataset):
         logger.info(f"Generated: {' '.join(generated_captions[i])}")
         logger.info(f"Ground truth: {ground_truth_captions[i]}")
         logger.info("---")
-    
-    # Import the plotting function
-    from src.plots import plot_images_with_captions
     
     # Create a list of captions with both generated and ground truth
     combined_captions = [f"Generated: {' '.join(gen)}\nGround truth: {gt}" 

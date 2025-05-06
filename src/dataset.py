@@ -35,8 +35,6 @@ class ImageCaptioningDataset(Dataset):
                     "img_id": img_id,
                     "caption_id": caption_id
                 })
-        
-        logger.info(f"Created dataset with {len(self.data)} samples")
     
     def __len__(self):
         return len(self.data)

@@ -9,6 +9,8 @@ from src.config import PROCESSED_DATA_DIR
 import pprint
 import pickle
 
+from torchvision import transforms
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads):
         super().__init__()
@@ -88,40 +90,6 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         ])
         self.lm_head = nn.Linear(d_model, vocab_size)
 
-    def preprocess_images(self, images):
-        """
-        Process images that can be either PIL Image objects, bytes, or a list of either
-        """
-        if isinstance(images, bytes) or (isinstance(images, dict) and "image_bytes" in images):
-            # Convert bytes back to PIL Image
-            if isinstance(images, dict) and "image_bytes" in images:
-                bytes_data = images["image_bytes"]
-                img_format = images.get("image_format", "JPEG")
-            else:
-                bytes_data = images
-                img_format = "JPEG"
-                
-            pil_image = Image.open(io.BytesIO(bytes_data))
-            images = [pil_image]
-        elif isinstance(images, Image.Image):
-            images = [images]
-        elif isinstance(images, list) and len(images) > 0:
-            # Process list of images or image dictionaries
-            processed = []
-            for img in images:
-                if isinstance(img, dict) and "image_bytes" in img:
-                    pil_img = Image.open(io.BytesIO(img["image_bytes"]))
-                    processed.append(pil_img)
-                elif isinstance(img, bytes):
-                    pil_img = Image.open(io.BytesIO(img))
-                    processed.append(pil_img)
-                elif isinstance(img, Image.Image):
-                    processed.append(img)
-            images = processed
-            
-        inputs = self.processor(images=images, return_tensors="pt")
-        return inputs["pixel_values"].to(next(self.parameters()).device)
-
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
             vis_out = self.clip.vision_model(pixel_values=pixel_values)
@@ -139,8 +107,7 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
 
     def forward(self, images, input_ids):
-        pixel_values = self.preprocess_images(images)
-        image_emb = self.get_image_embedding(pixel_values)         # (B, 1, D)
+        image_emb = self.get_image_embedding(images)         # (B, 1, D)
         text_emb = self.get_text_input_embeddings(input_ids)       # (B, T, D)
         
         # Fix: Ensure text_emb is the correct shape
@@ -156,36 +123,45 @@ class UnifiedAutoregressiveDecoder(nn.Module):
             x = block(x, mask)
 
         return self.lm_head(x[:, 1:, :])  # Predict only text tokens
+    
+    def generate_caption(self, images, max_new_tokens=50):
+        caption_tokens = self.generate_caption_token(images, max_new_tokens)
+        return self.decode_tokens(caption_tokens)
 
-    def generate_tokens(self, images, max_new_tokens=50):
-
+    def generate_caption_token(self, images, max_new_tokens=50):
         start_token_id = self.tokenizer.bos_token_id
         eos_token_id = self.tokenizer.eos_token_id
         if start_token_id is None or eos_token_id is None:
             raise ValueError("Start or EOS token ID not found in tokenizer.")
 
-        pixel_values = self.preprocess_images(images)
         device = next(self.parameters()).device
-        B = pixel_values.size(0)
-        image_emb = self.get_image_embedding(pixel_values.to(device))
-
+        
+        # Process images once to get number of samples in batch
+        B = images.size(0)
+        
+        # Start with BOS token for each sample in batch
         tokens = torch.full((B, 1), start_token_id, dtype=torch.long, device=device)
-
+        
+        # Generate up to max_new_tokens
         for _ in range(max_new_tokens):
-            text_emb = self.get_text_input_embeddings(tokens)
-            x = torch.cat([image_emb, text_emb], dim=1)
-            mask = self.causal_mask(x.size(1), device)
-
-            for block in self.decoder_blocks:
-                x = block(x, mask)
-
-            logits = self.lm_head(x[:, -1, :])  # (B, vocab)
-            next_token = logits.argmax(dim=-1, keepdim=True)
+            # Use forward method to get logits for current tokens
+            logits = self.forward(images, tokens)
+            
+            # Get prediction for next token (last position only)
+            next_token_logits = logits[:, -1, :]
+            next_token = next_token_logits.argmax(dim=-1, keepdim=True)
+            
+            # Add the predicted token to our sequence
             tokens = torch.cat([tokens, next_token], dim=1)
-
+            
+            # Stop if all sequences have generated EOS token
             if (next_token == eos_token_id).all():
                 break
-
+            
+            # Also stop if we've reached the model's maximum length
+            if tokens.size(1) >= self.max_len:
+                break
+                
         return tokens
     
     def decode_tokens(self, tokens):
@@ -239,6 +215,14 @@ if __name__ == "__main__":
     
     # Convert bytes back to PIL Image for processing
     pil_image = Image.open(io.BytesIO(first_image_data["image_bytes"]))
+
+    image_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5])
+        ])
+    
+    pil_image = image_transform(pil_image).unsqueeze(0)  # Add batch dimension
     
     # Get first caption ID and convert to input_ids that the model expects
     caption_id = first_image_data['caption_ids'][0]
@@ -254,20 +238,8 @@ if __name__ == "__main__":
 
     # a generate example
 
-    start_token_id = model.tokenizer.bos_token
-    eos_token_id = model.tokenizer.eos_token
-
-    print(f"Start token ID: {start_token_id}")
-    print(f"EOS token ID: {eos_token_id}")
-
     # Direct pass of the image dictionary to test our new preprocess_images method
-    generated_tokens = model.generate_tokens(first_image_data, max_new_tokens=50)
-
-    print(f"Generated tokens: {generated_tokens}")
-    print(f"Generated tokens shape: {generated_tokens.shape}")
-
-    # convert generated tokens to text
-    generated_text = model.decode_tokens(generated_tokens)
+    generated_text = model.generate_caption(pil_image, max_new_tokens=50)
 
     print(f"Generated text: {generated_text}")
     print(f"Generated text shape: {len(generated_text)}")

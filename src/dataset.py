@@ -1,13 +1,7 @@
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
-from loguru import logger
-import re
-
-from PIL import Image
 import io
 
-from torchvision import transforms
+from torch.utils.data import Dataset
+from PIL import Image
 
 class ImageCaptioningDataset(Dataset):
     def __init__(self, images, captions, model, resize_size, max_len, normalize_image):
@@ -26,7 +20,8 @@ class ImageCaptioningDataset(Dataset):
             for caption_id in img_data["caption_ids"]:
                 self.data.append({
                     "img_id": img_id,
-                    "caption_id": caption_id
+                    "caption_id": caption_id,
+                    "image_bytes": img_data["image_bytes"]  # Store original bytes for visualization
                 })
     
     def __len__(self):
@@ -44,7 +39,7 @@ class ImageCaptioningDataset(Dataset):
         caption_id = item["caption_id"]
         image = Image.open(io.BytesIO(self.images[img_id]["image_bytes"]))
         # Use CLIPProcessor for normalization
-        image = self.processor(images=image, return_tensors="pt")["pixel_values"][0]
+        image_tensor = self.processor(images=image, return_tensors="pt")["pixel_values"][0]
         caption = self.captions[caption_id]["caption"]
         caption = self.clean_text(caption)
         input_text = f"{self.bos_token} {caption}"
@@ -69,7 +64,8 @@ class ImageCaptioningDataset(Dataset):
         # Set PAD tokens in label_ids to pad_token_id for loss masking
         label_ids[tokenized_label.attention_mask[0] == 0] = self.pad_token_id
         return {
-            "image_bytes": image,
+            "image_tensor": image_tensor,        # for model
+            "image_bytes": item["image_bytes"],  # return original bytes for visualization
             "input_ids": input_ids,
             "label_ids": label_ids,
             "attention_mask": attention_mask

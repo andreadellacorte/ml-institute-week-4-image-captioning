@@ -1,3 +1,6 @@
+from PIL import Image
+import io
+
 from datetime import datetime
 
 from src.model import UnifiedAutoregressiveDecoder
@@ -87,7 +90,7 @@ SWEEP_CONFIG_FULL = {
     },
     "parameters": {
         "dataset_size": {
-            "values": [100]
+            "values": ["100"]
         },
         "batch_size": {
             "values": [8, 16, 32]
@@ -184,6 +187,9 @@ def train_model():
     # Split the image IDs
     train_ids = image_ids[:train_size]
     test_ids = image_ids[train_size:train_size+test_size]
+
+    if True:
+        test_ids = image_ids[:test_size]
     
     # Create dictionaries for each split
     train_images = {id: images[id] for id in train_ids}
@@ -282,7 +288,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
     device = next(model.parameters()).device
     for batch in progress_bar:
-        images = batch["image_bytes"].to(device)
+        images = batch["image_tensor"].to(device)
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -373,23 +379,13 @@ def evaluate(model, test_dataset):
     
     with torch.no_grad():
         for idx in sample_indices:
-            # Get a single sample
             sample = test_dataset[idx]
-
-            # Process inputs
-            image = sample["image_bytes"].unsqueeze(0).to(device)  # Add batch dimension
-            label_ids = sample["label_ids"].unsqueeze(0).to(device) # Add batch dimension
-
-            # Store original image for plotting
+            image = sample["image_tensor"].unsqueeze(0).to(device)  # Add batch dimension
+            label_ids = sample["label_ids"].unsqueeze(0).to(device)
+            # Use the original image bytes for visualization
             original_images.append(sample["image_bytes"])
-
-            # Use the generate_caption method to get the caption
             generated_caption = model.generate_caption(image, max_new_tokens=15)[0].split()
-
-            # For ground truth, get the text from the label_ids
             ground_truth = model.decode_tokens(label_ids.squeeze(0).cpu().numpy())
-
-            # Store results
             generated_captions.append(generated_caption)
             ground_truth_captions.append(ground_truth)
     
@@ -424,7 +420,8 @@ def evaluate(model, test_dataset):
         # Create a wandb table for the results
         caption_table = wandb.Table(columns=["Image", "Generated Caption", "Ground Truth"])
         for img, gen, gt in zip(original_images, generated_captions, ground_truth_captions):
-            caption_table.add_data(wandb.Image(img), " ".join(gen), gt)
+            pil_img = Image.open(io.BytesIO(img)) if isinstance(img, bytes) else img
+            caption_table.add_data(wandb.Image(pil_img), " ".join(gen), gt)
         
         # Log the table
         wandb.log({"caption_examples": caption_table})
@@ -436,7 +433,7 @@ def validate(model, val_dataset, criterion):
     total_loss = 0
     with torch.no_grad():
         for batch in val_loader:
-            images = batch["image_bytes"].to(device)
+            images = batch["image_tensor"].to(device)
             input_ids = batch["input_ids"].to(device)
             label_ids = batch["label_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)

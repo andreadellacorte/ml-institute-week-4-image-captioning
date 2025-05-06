@@ -3,16 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import CLIPModel, CLIPTokenizer, CLIPProcessor
 from PIL import Image
-
+import io
 from src.config import PROCESSED_DATA_DIR
 
 import pprint
-
-import random
-
 import pickle
-
-from torchvision.transforms import ToTensor
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, n_heads):
@@ -78,7 +73,7 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         super().__init__()
         self.clip = CLIPModel.from_pretrained(clip_model_name)
         self.tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
-        self.processor = CLIPProcessor.from_pretrained(clip_model_name)
+        self.processor = CLIPProcessor.from_pretrained(clip_model_name, use_fast=True)
         self.max_len = max_len
         self.d_model = d_model
 
@@ -94,8 +89,36 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.lm_head = nn.Linear(d_model, vocab_size)
 
     def preprocess_images(self, images):
-        if isinstance(images, Image.Image):
+        """
+        Process images that can be either PIL Image objects, bytes, or a list of either
+        """
+        if isinstance(images, bytes) or (isinstance(images, dict) and "image_bytes" in images):
+            # Convert bytes back to PIL Image
+            if isinstance(images, dict) and "image_bytes" in images:
+                bytes_data = images["image_bytes"]
+                img_format = images.get("image_format", "JPEG")
+            else:
+                bytes_data = images
+                img_format = "JPEG"
+                
+            pil_image = Image.open(io.BytesIO(bytes_data))
+            images = [pil_image]
+        elif isinstance(images, Image.Image):
             images = [images]
+        elif isinstance(images, list) and len(images) > 0:
+            # Process list of images or image dictionaries
+            processed = []
+            for img in images:
+                if isinstance(img, dict) and "image_bytes" in img:
+                    pil_img = Image.open(io.BytesIO(img["image_bytes"]))
+                    processed.append(pil_img)
+                elif isinstance(img, bytes):
+                    pil_img = Image.open(io.BytesIO(img))
+                    processed.append(pil_img)
+                elif isinstance(img, Image.Image):
+                    processed.append(img)
+            images = processed
+            
         inputs = self.processor(images=images, return_tensors="pt")
         return inputs["pixel_values"].to(next(self.parameters()).device)
 
@@ -119,8 +142,13 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         pixel_values = self.preprocess_images(images)
         image_emb = self.get_image_embedding(pixel_values)         # (B, 1, D)
         text_emb = self.get_text_input_embeddings(input_ids)       # (B, T, D)
+        
+        # Fix: Ensure text_emb is the correct shape
+        if len(text_emb.shape) == 4:  # If shape is [B, 1, T, D]
+            text_emb = text_emb.squeeze(1)  # Change to [B, T, D]
 
         x = torch.cat([image_emb, text_emb], dim=1)                # (B, 1+T, D)
+
         seq_len = x.size(1)
         mask = self.causal_mask(seq_len, x.device)
 
@@ -167,7 +195,16 @@ if __name__ == "__main__":
     with open(PROCESSED_DATA_DIR / "flickr30k/100_images.pkl", "rb") as f:
         images = pickle.load(f)
 
-    pprint.pprint(images[0])
+    pprint.pprint({
+        "First image ID": list(images.keys())[0],
+        "First image metadata": {
+            "image_size": images[list(images.keys())[0]]["image_size"],
+            "image_format": images[list(images.keys())[0]]["image_format"],
+            "image_mode": images[list(images.keys())[0]]["image_mode"],
+            "bytes_length": len(images[list(images.keys())[0]]["image_bytes"]),
+            "caption_ids": images[list(images.keys())[0]]["caption_ids"],
+        }
+    })
 
     with open(PROCESSED_DATA_DIR / "flickr30k/100_captions.pkl", "rb") as f:
         captions = pickle.load(f)
@@ -198,18 +235,21 @@ if __name__ == "__main__":
     
     # Process the first image
     first_id = list(images.keys())[0]
-    image_tensor = ToTensor()(images[first_id]["image"]).unsqueeze(0)
+    first_image_data = images[first_id]
+    
+    # Convert bytes back to PIL Image for processing
+    pil_image = Image.open(io.BytesIO(first_image_data["image_bytes"]))
     
     # Get first caption ID and convert to input_ids that the model expects
-    caption_id = images[first_id]['caption_ids'][0]
+    caption_id = first_image_data['caption_ids'][0]
     caption_text = captions[caption_id]['caption']
     
     # Use the model's tokenizer to convert text to input_ids
     input_ids = model.tokenizer(caption_text, return_tensors="pt").input_ids
     
     # Forward pass through the model
-    result = model(image_tensor, input_ids)
-
+    result = model(pil_image, input_ids)
+    
     print(f"{result}")
 
     # a generate example
@@ -220,7 +260,8 @@ if __name__ == "__main__":
     print(f"Start token ID: {start_token_id}")
     print(f"EOS token ID: {eos_token_id}")
 
-    generated_tokens = model.generate_tokens(image_tensor, max_new_tokens=50)
+    # Direct pass of the image dictionary to test our new preprocess_images method
+    generated_tokens = model.generate_tokens(first_image_data, max_new_tokens=50)
 
     print(f"Generated tokens: {generated_tokens}")
     print(f"Generated tokens shape: {generated_tokens.shape}")

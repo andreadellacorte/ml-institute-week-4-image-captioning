@@ -2,6 +2,8 @@
 import torch
 
 from torchvision.transforms import ToTensor
+from PIL import Image
+import io
 
 import pickle
 import pprint
@@ -11,11 +13,8 @@ import pprint
 import pickle
 
 from loguru import logger
-import typer
 
 from src.config import PROCESSED_DATA_DIR, RAW_DATA_DIR
-
-app = typer.Typer()
 
 SIZES = {
     1: "1",
@@ -27,7 +26,6 @@ SIZES = {
     10000: "10k",
 }
 
-@app.command()
 def main():
 
     import transformers
@@ -42,7 +40,9 @@ def main():
 
     pprint.pprint(captions[0])
 
-    image = ToTensor()(images[0]["image"]).unsqueeze(0)
+    # Convert image bytes to PIL Image
+    pil_image = Image.open(io.BytesIO(images[0]["image_bytes"]))
+    image = ToTensor()(pil_image).unsqueeze(0)
     print(image.shape)
 
     # pass the image through the CLIP Model Vision Encoder
@@ -54,7 +54,7 @@ def main():
     model = transformers.CLIPModel.from_pretrained(model_name)
     
     # Process the image with the CLIP processor
-    inputs = processor(images=images[0]["image"], return_tensors="pt", padding=True)
+    inputs = processor(images=pil_image, return_tensors="pt", padding=True)
     
     # Get the image features from the vision encoder
     with torch.no_grad():
@@ -84,4 +84,4 @@ def main():
         logger.info(f"Caption: {text[idx]} | Similarity score: {similarity[idx].item()}")
 
 if __name__ == "__main__":
-    app()
+    main()

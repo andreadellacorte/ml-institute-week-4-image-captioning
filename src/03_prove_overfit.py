@@ -1,8 +1,3 @@
-from PIL import Image
-import io
-
-from datetime import datetime
-
 from src.model import UnifiedAutoregressiveDecoder
 
 from src.dataset import ImageCaptioningDataset
@@ -14,7 +9,6 @@ from loguru import logger
 import pickle
 import random
 import torch
-import wandb
 import os
 
 from tqdm import tqdm
@@ -54,11 +48,8 @@ def main():
         n_layers=6,
         n_heads=8,
         d_ff=2048,
+        dropout_prob=0.0,  # Explicitly set dropout to 0
     )
-    # Set all dropout layers to 0 (including attention, embeddings, etc.)
-    for m in model.modules():
-        if isinstance(m, torch.nn.Dropout):
-            m.p = 0.0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

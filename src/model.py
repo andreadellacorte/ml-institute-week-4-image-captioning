@@ -42,15 +42,15 @@ class MultiHeadAttention(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model=512, n_heads=8, d_ff=2048, dropout=0.1):
+    def __init__(self, d_model=512, n_heads=8, d_ff=2048, dropout_prob=0.1):  # Added dropout_prob
         super().__init__()
         self.attn = MultiHeadAttention(d_model, n_heads)
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.GELU(),
-            nn.Dropout(dropout),
+            nn.Dropout(dropout_prob),  # Use dropout_prob
             nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout),
+            nn.Dropout(dropout_prob),  # Use dropout_prob
         )
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -69,6 +69,7 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         n_layers=6,
         n_heads=8,
         d_ff=2048,
+        dropout_prob=0.1,  # Added dropout_prob
     ):
         super().__init__()
         self.clip = CLIPModel.from_pretrained(clip_model_name)
@@ -88,10 +89,17 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         nn.init.trunc_normal_(self.img_pos_embedding, std=0.02)
 
         self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
+        self.text_proj = nn.Linear(self.clip.text_model.config.hidden_size, d_model)  # Added text projection
         self.decoder_blocks = nn.ModuleList([
-            DecoderBlock(d_model, n_heads, d_ff) for _ in range(n_layers)
+            DecoderBlock(d_model, n_heads, d_ff, dropout_prob=dropout_prob) for _ in range(n_layers)  # Pass dropout_prob
         ])
         self.lm_head = nn.Linear(d_model, self.tokenizer.vocab_size)
+
+        # Explicitly set dropout to 0 if dropout_prob is 0.0 after model initialization
+        if dropout_prob == 0.0:
+            for m in self.modules():
+                if isinstance(m, nn.Dropout):
+                    m.p = 0.0
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
@@ -105,7 +113,8 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         token_emb = self.clip.text_model.embeddings.token_embedding(input_ids)
         pos_ids = torch.arange(0, input_ids.shape[1], device=input_ids.device).unsqueeze(0)
         pos_emb = self.clip.text_model.embeddings.position_embedding(pos_ids + 1)  # shift by 1 for image token
-        return token_emb + pos_emb  # (B, T, D)
+        text_embeddings = token_emb + pos_emb  # (B, T, D_clip_text)
+        return self.text_proj(text_embeddings)  # Project to d_model
 
     def causal_mask(self, sz, device):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)

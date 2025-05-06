@@ -1,4 +1,5 @@
-# load one image from data/processed/flickr30k/1_images.pkl
+from datetime import datetime
+
 from src.model import UnifiedAutoregressiveDecoder
 
 from src.dataset import ImageCaptioningDataset
@@ -66,7 +67,7 @@ def main():
 
     print("Model loaded")
 
-    dataset = ImageCaptioningDataset(train_images, captions, model, max_len=15)
+    dataset = ImageCaptioningDataset(train_images, captions, model, max_len=22)
 
     print("Dataset loaded")
 
@@ -94,8 +95,13 @@ def train_one_epoch(model, dataloader, optimizer, criterion):
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
         
-        batch_size = input_ids.shape[0]
-        seq_length = input_ids.shape[1]
+        seq_length = input_ids.shape[2]
+
+        # Print shapes for debugging    
+        print(f"images shape: {images.shape}")
+        print(f"input_ids shape: {input_ids.shape}")
+        print(f"label_ids shape: {label_ids.shape}")
+        print(f"seq_length: {seq_length}")
         
         # Initialize running loss scalar
         batch_total_loss = 0
@@ -104,30 +110,35 @@ def train_one_epoch(model, dataloader, optimizer, criterion):
         # For each position in the sequence
         for i in range(1, seq_length):
             # Get progressively longer chunks of input
-            curr_input = input_ids[:, :i]
+            curr_input = input_ids[:, :, :i]
             
             # Zero gradients for each step
             optimizer.zero_grad()
             
             # Use the forward method to get predictions
-            # The return_all_logits=True parameter ensures we get logits for all positions
-            outputs = model(images, curr_input, return_all_logits=True)
+            outputs = model(images, curr_input)
             
             # Get corresponding target (next token predictions)
-            curr_target = label_ids[:, :i]
-            
-            # Calculate loss for this chunk
-            step_loss = criterion(outputs.reshape(-1, outputs.size(-1)), curr_target.reshape(-1))
-            
-            # Backward pass for this step's loss
-            step_loss.backward()
-            
-            # Update parameters
-            optimizer.step()
-            
-            # Add to running loss
-            batch_total_loss += step_loss.item()
-            sequence_positions += 1
+            # We want to predict the next token at each position
+            target_idx = i  # The next token after our current input
+            if target_idx < seq_length:
+                curr_target = label_ids[:, 0, target_idx]  # Access correct dimension
+                
+                # Calculate loss for this step (predict next token)
+                # outputs shape: [batch_size, seq_len, vocab_size]
+                # We want the prediction for the last position in the sequence
+                last_token_logits = outputs[:, -1, :]  # Get logits for the last token
+                step_loss = criterion(last_token_logits, curr_target)
+                
+                # Backward pass for this step's loss
+                step_loss.backward()
+                
+                # Update parameters
+                optimizer.step()
+                
+                # Add to running loss
+                batch_total_loss += step_loss.item()
+                sequence_positions += 1
             
             # Check if any sequence has reached EOS token
             if (curr_input == model.tokenizer.eos_token_id).any(dim=1).any():
@@ -207,12 +218,14 @@ def evaluate(model, test_images, test_captions):
     combined_captions = [f"Generated: {gen}\nGround truth: {gt}" 
                          for gen, gt in zip(generated_captions, ground_truth_captions)]
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     # Plot images with captions
     plot_images_with_captions(
         images=original_images,
         captions=combined_captions,
         title="Image Captioning Results",
-        save_path=FIGURES_DIR / "caption_results.png"
+        save_path=FIGURES_DIR / f"{timestamp}_caption_results.png"
     )
 
 def validate(model, val_images, val_captions):

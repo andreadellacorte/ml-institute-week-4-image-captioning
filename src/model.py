@@ -60,7 +60,6 @@ class DecoderBlock(nn.Module):
         x = x + self.ff(self.norm2(x))
         return x
 
-
 class UnifiedAutoregressiveDecoder(nn.Module):
     def __init__(
         self,
@@ -122,7 +121,10 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         for block in self.decoder_blocks:
             x = block(x, mask)
 
-        return self.lm_head(x[:, 1:, :])  # Predict only text tokens
+        # Apply language model head to get logits
+        logits = self.lm_head(x[:, 1:, :])  # Predict only text tokens, exclude image token
+        
+        return logits
     
     def generate_caption(self, images, max_new_tokens=50):
         caption_tokens = self.generate_caption_token(images, max_new_tokens)

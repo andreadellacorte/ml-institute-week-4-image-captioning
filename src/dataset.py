@@ -10,7 +10,7 @@ import io
 from torchvision import transforms
 
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, model, resize_size=224):
+    def __init__(self, images, captions, model, resize_size=224, max_len=25):
         self.images = images
         self.captions = captions
 
@@ -18,7 +18,7 @@ class ImageCaptioningDataset(Dataset):
         self.bos_token = model.tokenizer.bos_token
         self.eos_token = model.tokenizer.eos_token
         self.pad_token = model.tokenizer.pad_token
-        self.max_len = model.max_len
+        self.max_len = max_len
         self.model = model
 
         self.image_transform = transforms.Compose([

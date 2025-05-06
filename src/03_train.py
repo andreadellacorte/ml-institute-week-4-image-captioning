@@ -66,7 +66,7 @@ def main():
 
     print("Model loaded")
 
-    dataset = ImageCaptioningDataset(train_images, captions, model)
+    dataset = ImageCaptioningDataset(train_images, captions, model, max_len=15)
 
     print("Dataset loaded")
 
@@ -174,23 +174,20 @@ def evaluate(model, test_images, test_captions):
         for idx in sample_indices:
             # Get a single sample
             sample = test_dataset[idx]
-            
+
             # Process inputs
             image = sample["image_bytes"].unsqueeze(0).to(device)  # Add batch dimension
             label_ids = sample["label_ids"].unsqueeze(0).to(device) # Add batch dimension
-            
+
             # Store original image for plotting
             original_images.append(sample["image_bytes"])
-            
-            # Use the generate_caption method to get the caption
-            generated_caption = model.generate_caption(image, max_new_tokens=50)[0]
 
-            # Truncate the generated caption to 10 words
-            generated_caption = generated_caption[:label_ids.size(1)]
-            
+            # Use the generate_caption method to get the caption
+            generated_caption = model.generate_caption(image, max_new_tokens=15)[0].split()
+
             # For ground truth, get the text from the label_ids
             ground_truth = model.decode_tokens(label_ids.squeeze(0).cpu().numpy())
-            
+
             # Store results
             generated_captions.append(generated_caption)
             ground_truth_captions.append(ground_truth)

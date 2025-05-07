@@ -67,6 +67,9 @@ SWEEP_CONFIG = {
         "n_layers": {
             "values": [4]
         },
+        "n_heads": {
+            "values": [6]
+        },
         "d_ff": {
             "values": [256]
         },
@@ -78,18 +81,12 @@ SWEEP_CONFIG = {
         },
         "patience": {
             "values": [3]
-        }
-    },
-    "conditions": {
-        "d_model": {
-            "128": {"n_heads": {"values": [4, 8]}},
-            "192": {"n_heads": {"values": [6]}},
-            "256": {"n_heads": {"values": [4, 8]}}
-        }
+        },
+        "clean_captions": {
+            "values": [False]
+        },
     }
 }
-
-processed_image_tensors = {}
 
 sweep_config = SWEEP_CONFIG  # Use the debug config
 
@@ -201,17 +198,13 @@ def train_model():
         train_images,
         captions,
         model,
-        processed_image_tensors)
-    
-    processed_image_tensors.update(train_dataset.processed_image_tensors)
+        clean_captions=config.clean_captions)
 
     test_dataset = ImageCaptioningDataset(
         test_images,
         captions,
         model,
-        processed_image_tensors)
-
-    processed_image_tensors.update(test_dataset.processed_image_tensors)
+        clean_captions=config.clean_captions)
 
     logger.info("Dataset loaded")
 
@@ -342,7 +335,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
 
     for batch_idx, batch in enumerate(progress_bar):
         batch_start_time = time.time()
-        images = batch["image_tensor"].to(device)
+        image_tensor = batch["image_tensor"].to(device)
         input_ids = batch["input_ids"].to(device)
         label_ids = batch["label_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -360,7 +353,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
                 # logit_by_logit_step does not take attention_mask and returns a float
                 # It handles its own AMP scaling internally if needed
                 current_loss = step_function_impl(
-                    model, images, input_ids, label_ids, optimizer, criterion,
+                    model, image_tensor, input_ids, label_ids, optimizer, criterion,
                     length_penalty_weight, pad_token_id, device, scaler, use_amp # Pass scaler and use_amp
                 )
                 loss_val = current_loss  # Already a float
@@ -369,7 +362,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
                 # full_sentence_step takes attention_mask and returns a tensor and detailed timings
                 # AMP is handled by the autocast context here, scaler is passed for backward/step
                 loss_tensor, returned_timings = step_function_impl(
-                    model, images, input_ids, label_ids, attention_mask, optimizer, criterion,
+                    model, image_tensor, input_ids, label_ids, attention_mask, optimizer, criterion,
                     length_penalty_weight, pad_token_id, device, scaler, use_amp # Pass scaler and use_amp
                 )
                 loss_val = loss_tensor.item() # loss_tensor is already after potential scaling
@@ -484,11 +477,11 @@ def evaluate(model, test_dataset):
     with torch.no_grad():
         for idx in sample_indices:
             sample = test_dataset[idx]
-            image = sample["image_tensor"].unsqueeze(0).to(device)  # Add batch dimension
+            image_tensor = sample["image_tensor"].unsqueeze(0).to(device) # Add batch dimension
             label_ids = sample["label_ids"].unsqueeze(0).to(device)
             # Use the original image bytes for visualization
             original_images.append(sample["image_bytes"])
-            generated_caption = model.generate_caption(image, max_new_tokens=15)[0].split()
+            generated_caption = model.generate_caption(image_tensor, max_new_tokens=15)[0].split()
             ground_truth = model.decode_tokens(label_ids.squeeze(0).cpu().numpy())
             generated_captions.append(generated_caption)
             ground_truth_captions.append(ground_truth)
@@ -535,13 +528,13 @@ def validate(model, val_loader, criterion, length_penalty_weight, pad_token_id):
     total_loss = 0
     with torch.no_grad():
         for batch in val_loader:
-            images = batch["image_tensor"].to(device)
+            image_tensor = batch["image_tensor"].to(device)
             input_ids = batch["input_ids"].to(device)
             label_ids = batch["label_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             
             with autocast(device_type=device.type, enabled=use_amp): # Use autocast for validation forward pass
-                outputs = model(images, input_ids, attention_mask=attention_mask)
+                outputs = model(image_tensor, input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
 
             # Add length penalty consistent with training

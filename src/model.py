@@ -109,7 +109,6 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
 
     def forward(self, pixel_values, input_ids, attention_mask=None):
-        # No need to normalise pixel_values, already done in the dataset.py
         image_emb = self.get_image_embedding(pixel_values)  # (B, X, D)
         text_emb = self.get_text_input_embeddings(input_ids)  # (B, T, D)
 

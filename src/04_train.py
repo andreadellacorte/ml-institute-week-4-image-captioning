@@ -27,7 +27,7 @@ from torch.amp import GradScaler, autocast
 # WandB Configuration Settings
 WANDB_CONFIG = {
     # Set to 'online', 'offline', or 'disabled'
-    "mode": "online",
+    "mode": "offline",
     "project": "mlx7-week-4-image-captioning",
     "entity": None,  # Set to your wandb username/team or None
 }
@@ -98,16 +98,16 @@ SWEEP_CONFIG_FULL = {
     },
     "parameters": {
         "dataset_size": {
-            "values": [5000]
+            "values": [100]
         },
         "batch_size": {
-            "values": [512]
+            "values": [256, 512]
         },
         "learning_rate": {
-            "value": 1e-4  # Fixed learning rate
+            "values": [1e-4, 5e-4]
         },
         "num_epochs": {
-            "values": [20]  # Reduced epochs for faster debugging turn-around
+            "values": [5]  # Reduced epochs for faster debugging turn-around
         },
         "optimizer": {
             "value": "adam"
@@ -120,22 +120,22 @@ SWEEP_CONFIG_FULL = {
         },
         # Fixed small model architecture
         "d_model": {
-            "values": [512]
+            "values": [64, 128, 256, 512, 1024]
         },
         "n_layers": {
-            "values": [1]
+            "values": [1, 2, 4, 8]
         },
         "n_heads": {
-            "values": [1]
+            "values": [1, 2, 4, 8]
         },
         "d_ff": {
-            "values": [64]
+            "values": [64, 128, 256, 512, 1024]
         },
         "dropout_prob": {
-            "values": [0.1]
+            "values": [0.0, 0.01, 0.1]
         },
         "length_penalty_weight": {
-            "values": [0.01]
+            "values": [0.0, 0.01, 0.1, 0.5]
         }
     }
 }

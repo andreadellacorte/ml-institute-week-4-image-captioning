@@ -375,7 +375,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
         }
         
         # Autocast for the step function if on CUDA
-        with autocast(device_type=device, enabled=use_amp):
+        with autocast(device_type=device.type, enabled=use_amp):
             if step_function_name == "logit_by_logit":
                 # logit_by_logit_step does not take attention_mask and returns a float
                 # It handles its own AMP scaling internally if needed
@@ -569,7 +569,7 @@ def validate(model, val_dataset, criterion, length_penalty_weight, pad_token_id)
             label_ids = batch["label_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             
-            with autocast(device_type=device, enabled=use_amp): # Use autocast for validation forward pass
+            with autocast(device_type=device.type, enabled=use_amp): # Use autocast for validation forward pass
                 outputs = model(images, input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
 

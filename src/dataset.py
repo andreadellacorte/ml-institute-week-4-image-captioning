@@ -24,13 +24,6 @@ class ImageCaptioningDataset(Dataset):
         # Pre-process and store normalized images with a progress bar
         self.processed_image_tensors = processed_image_tensors
 
-        for img_id, img_content in tqdm(self.images.items(), desc="Processing images"):
-            if img_id in self.processed_image_tensors:
-                continue
-            image_pil = Image.open(io.BytesIO(img_content["image_bytes"]))
-            with torch.no_grad():
-                self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
-
         # Prepare dataset with a progress bar
         self.data = []
         for img_id, img_data in tqdm(self.images.items(), desc="Preparing dataset"):
@@ -52,6 +45,13 @@ class ImageCaptioningDataset(Dataset):
         item = self.data[idx] # item now only contains img_id and caption_id
         img_id = item["img_id"]
         caption_id = item["caption_id"]
+
+        if img_id not in self.processed_image_tensors:
+            image_pil = Image.open(io.BytesIO(self.images[img_id]["image_bytes"]))
+            with torch.no_grad():
+                self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
+        
+        image_tensor = self.processed_image_tensors[img_id]
 
         # Retrieve pre-processed image tensor
         image_tensor = self.processed_image_tensors[img_id]

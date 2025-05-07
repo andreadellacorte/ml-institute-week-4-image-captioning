@@ -32,65 +32,8 @@ WANDB_CONFIG = {
     "entity": None,  # Set to your wandb username/team or None
 }
 
-# Sweep Configuration - Single (for quick targeted sweeps)
-SWEEP_CONFIG_SINGLE = {
-    "method": "random",
-    "metric": {
-        "name": "train_loss",
-        "goal": "minimize"
-    },
-    "parameters": {
-        "dataset_size": {
-            "values": [500, 1000]
-        },
-        "batch_size": {
-            "values": [8, 16, 32]
-        },
-        "learning_rate": {
-            "values": [1e-4, 5e-4]
-        },
-        "num_epochs": {
-            "value": 2  # Fewer epochs for quick sweep
-        },
-        "optimizer": {
-            "value": "adam"
-        },
-        "max_len": {
-            "value": 22
-        },
-        "step_function": {
-            "value": "full_sentence"
-        },
-        "resize_size": {
-            "value": 224
-        },
-        "normalize": {
-            "value": True
-        },
-        # Adding model architecture parameters
-        "d_model": {
-            "value": 512
-        },
-        "n_layers": {
-            "value": 6
-        },
-        "n_heads": {
-            "value": 8
-        },
-        "d_ff": {
-            "value": 2048
-        },
-        "seed": {
-            "value": 3047
-        },
-        "dropout_prob": {  # Added dropout_prob
-            "value": 0.1
-        }
-    }
-}
-
 # Sweep Configuration for Debugging Slowdown
-SWEEP_CONFIG_FULL = {
+SWEEP_CONFIG = {
     "method": "bayes",
     "metric": {
         "name": "validation_loss",
@@ -98,51 +41,57 @@ SWEEP_CONFIG_FULL = {
     },
     "parameters": {
         "dataset_size": {
-            "values": [100]
+            "values": ["full"]
         },
         "batch_size": {
-            "values": [256, 512]
+            "values": [512]
         },
         "learning_rate": {
-            "values": [1e-4, 5e-4]
+            "values": [0.003]
         },
         "num_epochs": {
-            "values": [5]  # Reduced epochs for faster debugging turn-around
+            "values": [10]  # Reduced epochs for faster debugging turn-around
         },
         "optimizer": {
             "value": "adam"
         },
         "max_len": {
-            "value": 25
+            "value": 20
         },
         "step_function": {
             "value": "full_sentence"
         },
-        # Fixed small model architecture
         "d_model": {
-            "values": [64, 128, 256, 512, 1024]
+            "values": [192]
         },
         "n_layers": {
-            "values": [1, 2, 4, 8]
-        },
-        "n_heads": {
-            "values": [1, 2, 4, 8]
+            "values": [4]
         },
         "d_ff": {
-            "values": [64, 128, 256, 512, 1024]
+            "values": [256]
         },
         "dropout_prob": {
-            "values": [0.0, 0.01, 0.1]
+            "values": [0.05]
         },
         "length_penalty_weight": {
-            "values": [0.0, 0.01, 0.1, 0.5]
+            "values": [0.0]
+        },
+        "patience": {
+            "values": [3]
+        }
+    },
+    "conditions": {
+        "d_model": {
+            "128": {"n_heads": {"values": [4, 8]}},
+            "192": {"n_heads": {"values": [6]}},
+            "256": {"n_heads": {"values": [4, 8]}}
         }
     }
 }
 
 processed_image_tensors = {}
 
-sweep_config = SWEEP_CONFIG_FULL  # Use the debug config
+sweep_config = SWEEP_CONFIG  # Use the debug config
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -213,6 +162,7 @@ def train_model():
     
     # Convert dictionary to list for proper splitting
     image_ids = list(images.keys())
+    random.shuffle(image_ids)
     
     # Calculate split indices
     train_size = int(len(image_ids) * 0.9)
@@ -220,7 +170,7 @@ def train_model():
     
     # Split the image IDs
     train_ids = image_ids[:train_size]
-    test_ids = image_ids[train_size:train_size+test_size]
+    test_ids = image_ids[train_size:train_size + test_size]
     
     # Create dictionaries for each split
     train_images = {id: images[id] for id in train_ids}
@@ -269,16 +219,24 @@ def train_model():
     num_workers = 4 if device.type == 'cuda' else 0 # Use workers if on GPU
     pin_memory = True if device.type == 'cuda' else False
 
-    dataloader = torch.utils.data.DataLoader(
+    train_dataloader = torch.utils.data.DataLoader(
         train_dataset, 
         batch_size=config.batch_size, 
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory
     )
+    
+    val_dataloader = torch.utils.data.DataLoader(
+        test_dataset, 
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
 
     logger.info("Dataloader loaded")
-    logger.info(f"Length of dataloader: {len(dataloader)}")
+    logger.info(f"Length of dataloader: {len(train_dataloader)}")
 
     # Configure optimizer based on config
     if config.optimizer == "adam":
@@ -302,6 +260,11 @@ def train_model():
     else:  # Default to full_sentence
         step_function_impl = full_sentence_step
     
+    best_val_loss = float('inf')
+    patience = config.patience  # Number of epochs to wait for improvement
+    epochs_without_improvement = 0
+    best_model_state = None
+
     # Training loop
     for epoch in range(config.num_epochs):
         epoch_start_time = datetime.now()
@@ -309,7 +272,7 @@ def train_model():
         # Also pass length_penalty_weight and pad_token_id
         loss = train_one_epoch(
             model, 
-            dataloader, 
+            train_dataloader, 
             optimizer, 
             criterion, 
             step_function_impl, 
@@ -331,17 +294,34 @@ def train_model():
         })
         
         # Evaluate model every other epoch to save time
-        if (epoch + 1) % 2 == 0 or epoch == config.num_epochs - 1:
+        if (epoch + 1) % 5 == 0 or epoch == config.num_epochs - 1:
             evaluate(model, test_dataset)
             val_loss = validate(
                 model, 
-                test_dataset, 
+                val_dataloader, 
                 criterion, 
                 config.length_penalty_weight, 
                 model.tokenizer.pad_token_id 
             )
             wandb.log({"validation_loss": val_loss}) # Log validation loss
-    
+
+            # Early stopping logic
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
+                best_model_state = model.state_dict()  # Save best model weights
+            else:
+                epochs_without_improvement += 1
+                logger.info(f"No improvement in validation loss for {epochs_without_improvement} epoch(s).")
+                if epochs_without_improvement >= patience:
+                    logger.info("Early stopping triggered.")
+                    break
+
+    # Optionally restore best model weights
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        logger.info("Loaded best model weights from early stopping.")
+
     # Final logging of metrics
     wandb.log({
         "final_train_loss": loss,
@@ -547,20 +527,11 @@ def evaluate(model, test_dataset):
         # Log the table
         wandb.log({"caption_examples": caption_table})
 
-def validate(model, val_dataset, criterion, length_penalty_weight, pad_token_id):
+def validate(model, val_loader, criterion, length_penalty_weight, pad_token_id):
     model.eval()
     device = next(model.parameters()).device
     use_amp = (device.type == 'cuda') # Determine if AMP should be used for validation
     
-    # Optimized DataLoader for validation
-    num_workers = 4 if device.type == 'cuda' else 0
-    pin_memory = True if device.type == 'cuda' else False
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, 
-        batch_size=16, # Consider making this configurable or larger for validation
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
     total_loss = 0
     with torch.no_grad():
         for batch in val_loader:

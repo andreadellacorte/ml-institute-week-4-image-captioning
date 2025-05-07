@@ -9,7 +9,7 @@ import string
 from tqdm import tqdm
 
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, model, processed_image_tensors):
+    def __init__(self, images, captions, model, processed_image_tensors, clean_captions=False):
         self.images = images # This is the original images dict with bytes and caption_ids
         self.captions = captions
         self.tokenizer = model.tokenizer
@@ -17,6 +17,7 @@ class ImageCaptioningDataset(Dataset):
         self.eos_token = model.tokenizer.eos_token
         self.pad_token = model.tokenizer.pad_token
         self.pad_token_id = model.tokenizer.pad_token_id
+        self.clean_captions = clean_captions
 
         self.max_len = model.max_len
         self.processor = model.processor  # Use CLIPProcessor for image normalization
@@ -50,8 +51,6 @@ class ImageCaptioningDataset(Dataset):
             image_pil = Image.open(io.BytesIO(self.images[img_id]["image_bytes"]))
             with torch.no_grad():
                 self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
-        
-        image_tensor = self.processed_image_tensors[img_id]
 
         # Retrieve pre-processed image tensor
         image_tensor = self.processed_image_tensors[img_id]
@@ -60,7 +59,8 @@ class ImageCaptioningDataset(Dataset):
         image_bytes = self.images[img_id]["image_bytes"]
         
         caption = self.captions[caption_id]["caption"]
-        caption = self.clean_text(caption)
+        if self.clean_captions:  # <--- Only clean if enabled
+            caption = self.clean_text(caption)
 
         # Prepare input_ids: [BOS, content_tokens, PAD...]
         # The tokenizer should add BOS automatically if configured, 

@@ -136,11 +136,11 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         
         return logits
 
-    def generate_caption(self, images, max_new_tokens=50, decoding="greedy", num_beams=3, top_k=0, top_p=1.0):
-        caption_tokens = self.generate_caption_token(images, max_new_tokens, decoding, num_beams, top_k, top_p)
+    def generate_caption(self, images, max_new_tokens=50, decoding="greedy", top_k=0):
+        caption_tokens = self.generate_caption_token(images, max_new_tokens, decoding, top_k)
         return self.decode_tokens(caption_tokens)
 
-    def generate_caption_token(self, images, max_new_tokens=50, decoding="greedy", num_beams=3, top_k=0, top_p=1.0):
+    def generate_caption_token(self, images, max_new_tokens=50, decoding="greedy", top_k=0):
         # Only greedy and top-k sampling for now
         start_token_id = self.tokenizer.bos_token_id
         eos_token_id = self.tokenizer.eos_token_id
@@ -167,7 +167,6 @@ class UnifiedAutoregressiveDecoder(nn.Module):
 
     def decode_tokens(self, tokens):
         # Accepts either a 1D or 2D tensor/array
-        import torch
         if isinstance(tokens, torch.Tensor):
             tokens = tokens.cpu().numpy()
         if len(tokens.shape) == 1:

@@ -18,6 +18,8 @@ def set_seed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
 
+processed_image_tensors = {}
+
 def main():
     # Set wandb mode
     os.environ["WANDB_MODE"] = "disabled"  # Disable wandb for overfit test
@@ -25,9 +27,9 @@ def main():
     set_seed(42)
 
     # Always load 10 samples for overfit test
-    with open(PROCESSED_DATA_DIR / "flickr30k/100_images.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "flickr30k/1_images.pkl", "rb") as f:
         images = pickle.load(f)
-    with open(PROCESSED_DATA_DIR / "flickr30k/100_captions.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "flickr30k/1_captions.pkl", "rb") as f:
         captions = pickle.load(f)
 
     # Select 1 image for trivial overfit
@@ -57,31 +59,33 @@ def main():
     dataset = ImageCaptioningDataset(
         train_images,
         captions,
-        model)
+        model,
+        processed_image_tensors)
+    
+    processed_image_tensors.update(dataset.processed_image_tensors)
+
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2, shuffle=True)
 
     # Use same for validation
     val_dataset = ImageCaptioningDataset(
         test_images,
         captions,
-        model)
+        model,
+        processed_image_tensors)
+    
+    processed_image_tensors.update(val_dataset.processed_image_tensors)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)  # Reduced LR from 1e-2 to 1e-4
     criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
 
-    # Print detailed debug info for the only sample
+    # Print detailed debug info for the first sample
     sample = dataset[0]
+
     # Get caption_id from the dataset's internal data list
-    caption_id_for_sample = dataset.data[0]["caption_id"]
-    cleaned_caption = dataset.clean_text(captions[caption_id_for_sample]["caption"])
-    label_str = f"{cleaned_caption} {model.tokenizer.eos_token}"
-    decoded_label = model.decode_tokens(sample["label_ids"])
-    logger.info(f"Cleaned caption: {cleaned_caption}")
-    logger.info(f"Label string: {label_str}")
-    logger.info(f"Decoded label from label_ids: {decoded_label}")
     logger.info(f"Label token ids: {sample['label_ids']}")
-    logger.info(f"Input text: {model.decode_tokens(sample['input_ids'])}")
+    logger.info(f"Decoded text: {model.decode_tokens(sample['label_ids'])}")
     logger.info(f"Input token ids: {sample['input_ids']}")
+    logger.info(f"Input text: {model.decode_tokens(sample['input_ids'])}")
 
     # Overfit loop
     for epoch in range(100):  # Increased from 20 to 100
@@ -127,7 +131,7 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     outputs = model(images, input_ids, attention_mask=attention_mask)
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
 
-    length_penalty_weight = 0.5
+    length_penalty_weight = 0.0
 
     # Apply length penalty
     length_penalty = length_penalty_weight * (label_ids != model.tokenizer.pad_token_id).sum(dim=1).float()

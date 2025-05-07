@@ -28,7 +28,8 @@ class ImageCaptioningDataset(Dataset):
             if img_id in self.processed_image_tensors:
                 continue
             image_pil = Image.open(io.BytesIO(img_content["image_bytes"]))
-            self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
+            with torch.no_grad():
+                self.processed_image_tensors[img_id] = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]
 
         # Prepare dataset with a progress bar
         self.data = []
@@ -45,7 +46,7 @@ class ImageCaptioningDataset(Dataset):
     def clean_text(self, text):
         # keep only alphanum
         allowed = set(string.ascii_letters + string.digits + " ")
-        return ''.join([c for c in text if c in allowed]).strip()
+        return ''.join([c.lower() for c in text if c in allowed]).strip()
     
     def __getitem__(self, idx):
         item = self.data[idx] # item now only contains img_id and caption_id

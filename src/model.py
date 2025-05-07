@@ -78,15 +78,11 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.max_len = max_len
         self.d_model = d_model
 
-        # Unfreeze text embeddings for adaptation
+        # Freze clip models
         for p in self.clip.vision_model.parameters():
             p.requires_grad = False
         for p in self.clip.text_model.embeddings.parameters():
-            p.requires_grad = True  # Unfreeze text embeddings
-
-        # Add a learnable position embedding for the image token
-        self.img_pos_embedding = nn.Parameter(torch.zeros(1, 1, d_model))
-        nn.init.trunc_normal_(self.img_pos_embedding, std=0.02)
+            p.requires_grad = False
 
         self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
         self.text_proj = nn.Linear(self.clip.text_model.config.hidden_size, d_model)  # Added text projection
@@ -103,42 +99,41 @@ class UnifiedAutoregressiveDecoder(nn.Module):
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
-            vis_out = self.clip.vision_model(pixel_values=pixel_values)
-        # Use pooled_output (CLS token) instead of mean pooling
-        pooled = vis_out.pooler_output  # (B, D)
-        return self.image_proj(pooled).unsqueeze(1)  # (B, 1, D)
+            return self.clip.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, X, D)
 
     def get_text_input_embeddings(self, input_ids):
-        # Unfrozen text embeddings
-        token_emb = self.clip.text_model.embeddings.token_embedding(input_ids)
-        pos_ids = torch.arange(0, input_ids.shape[1], device=input_ids.device).unsqueeze(0)
-        pos_emb = self.clip.text_model.embeddings.position_embedding(pos_ids + 1)  # shift by 1 for image token
-        text_embeddings = token_emb + pos_emb  # (B, T, D_clip_text)
-        return self.text_proj(text_embeddings)  # Project to d_model
+        with torch.no_grad():
+            return self.clip.text_model.embeddings(input_ids)
 
     def causal_mask(self, sz, device):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
 
-    def forward(self, images, input_ids, attention_mask=None):
-        # Use CLIPProcessor for image normalization
-        with torch.no_grad():
-            processed = self.processor(images=[img for img in images], return_tensors="pt")
-            pixel_values = processed["pixel_values"].to(images.device)
-        image_emb = self.get_image_embedding(pixel_values)  # (B, 1, D)
+    def forward(self, pixel_values, input_ids, attention_mask=None):
+        # No need to normalise pixel_values, already done in the dataset.py
+        image_emb = self.get_image_embedding(pixel_values)  # (B, X, D)
         text_emb = self.get_text_input_embeddings(input_ids)  # (B, T, D)
-        # Add image position embedding
-        image_emb = image_emb + self.img_pos_embedding
-        x = torch.cat([image_emb, text_emb], dim=1)  # (B, 1+T, D)
+
+        image_proj = self.image_proj(image_emb)  # (B, X, D)
+        text_proj = self.text_proj(text_emb)  # (B, T, D)
+        
+        x = torch.cat([image_proj, text_proj], dim=1)  # (B, X+T, D)
+
         seq_len = x.size(1)
+        n_patches = image_proj.shape[1]  # Use actual number of patches at runtime
+
         # Causal mask
         mask = self.causal_mask(seq_len, x.device)
+
         # Padding mask
         if attention_mask is not None:
-            pad_mask = F.pad(attention_mask, (1, 0), value=1)  # Add 1 for image token
+            pad_mask = F.pad(attention_mask, (n_patches, 0), value=1)  # Pad for all image patches
             mask = mask * pad_mask[:, None, None, :]
+
         for block in self.decoder_blocks:
             x = block(x, mask)
-        logits = self.lm_head(x[:, 1:, :])  # Predict only text tokens, exclude image token
+
+        logits = self.lm_head(x[:, n_patches:, :])  # Predict only text tokens, exclude image patches
+        
         return logits
 
     def generate_caption(self, images, max_new_tokens=50, decoding="greedy", num_beams=3, top_k=0, top_p=1.0):

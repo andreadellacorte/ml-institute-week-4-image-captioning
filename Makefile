@@ -38,6 +38,26 @@ format:
 test:
 	python -m pytest tests
 
+PID_FILE := script.pid
+LOG_FILE := output.log
+
+.PHONY: nohup
+nohup:
+	@if [ -z "$(script)" ]; then \
+		echo "Usage: make nohup script=your_script.py"; \
+		exit 1; \
+	fi
+	nohup python3 $(script) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE)
+
+.PHONY: stop
+stop:
+	@-kill `cat $(PID_FILE)` 2>/dev/null || true
+	@rm -f $(PID_FILE)
+
+.PHONY: logs
+logs:
+	tail -f $(LOG_FILE)
+
 #################################################################################
 # PROJECT RULES                                                                 #
 #################################################################################

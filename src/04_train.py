@@ -45,7 +45,11 @@ SWEEP_CONFIG = {
             "values": ["5000"]
         },
         "batch_size": {
+<<<<<<< Updated upstream
             "values": [32, 64, 128]
+=======
+            "values": [128, 256, 512]
+>>>>>>> Stashed changes
         },
         "learning_rate": {
             "values": [0.001, 0.005, 0.01]

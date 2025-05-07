@@ -32,7 +32,7 @@ class ImageCaptioningDataset(Dataset):
     
     def clean_text(self, text):
         # keep only alphanum
-        allowed = set(string.ascii_letters + string.digits + " ")
+        allowed = set(string.ascii_letters + string.digits + " .,-!?-")
         return ''.join([c.lower() for c in text if c in allowed]).strip()
     
     def __getitem__(self, idx):

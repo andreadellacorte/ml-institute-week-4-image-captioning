@@ -62,16 +62,16 @@ SWEEP_CONFIG = {
             "value": "full_sentence"
         },
         "d_model": {
-            "values": [192]
+            "values": [512]
         },
         "n_layers": {
-            "values": [4]
+            "values": [8]
         },
         "n_heads": {
-            "values": [6]
+            "values": [16]
         },
         "d_ff": {
-            "values": [256]
+            "values": [512]
         },
         "dropout_prob": {
             "values": [0.05]
@@ -276,6 +276,8 @@ def train_model():
         )
         epoch_end_time = datetime.now()
         epoch_duration = (epoch_end_time - epoch_start_time).total_seconds()
+
+        save_model(run, model, epoch)
         
         logger.info(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
         
@@ -286,9 +288,11 @@ def train_model():
             "epoch_duration": epoch_duration,
         })
         
-        # Evaluate model every other epoch to save time
+        # Evaluate model every epoch
+        evaluate(run, model, test_dataset, epoch)
+
+        # Validate model every 5 epochs
         if (epoch + 1) % 5 == 0 or epoch == config.num_epochs - 1:
-            evaluate(model, test_dataset)
             val_loss = validate(
                 model, 
                 val_dataloader, 
@@ -315,6 +319,8 @@ def train_model():
         model.load_state_dict(best_model_state)
         logger.info("Loaded best model weights from early stopping.")
 
+    save_model(run, model, "best")
+
     # Final logging of metrics
     wandb.log({
         "final_train_loss": loss,
@@ -322,6 +328,16 @@ def train_model():
     
     # Close wandb run
     wandb.finish()
+
+def save_model(run, model, epoch):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save the model use the wandb run name for the filename
+    model_save_path = PROCESSED_DATA_DIR / "checkpoints" / f"{timestamp}_{run.name}_model_{epoch}.pth"
+    torch.save(model.state_dict(), model_save_path)
+    wandb.save(model_save_path, base_path=PROCESSED_DATA_DIR / "checkpoints")
+
+    logger.info(f"Model saved to {model_save_path} and uploaded to wandb.")
 
 def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl, step_function_name, length_penalty_weight, pad_token_id, scaler): # Added scaler
     model.train()
@@ -459,7 +475,7 @@ def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterio
         
     return avg_batch_loss
 
-def evaluate(model, test_dataset):
+def evaluate(run, model, test_dataset, epoch):
     model.eval()
     logger.info("Evaluation:")
     
@@ -505,7 +521,7 @@ def evaluate(model, test_dataset):
         images=original_images,
         captions=combined_captions,
         title="Image Captioning Results",
-        save_path=FIGURES_DIR / f"{timestamp}_caption_results.png",
+        save_path=FIGURES_DIR / f"{timestamp}_{run.name}_{epoch}.png",
         show=False
     )
     

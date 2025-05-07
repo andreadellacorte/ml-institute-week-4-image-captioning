@@ -101,7 +101,7 @@ SWEEP_CONFIG_FULL = {
             "values": [5000]
         },
         "batch_size": {
-            "values": [8, 16, 32, 64, 128, 256, 512]
+            "values": [512]
         },
         "learning_rate": {
             "value": 1e-4  # Fixed learning rate
@@ -120,22 +120,22 @@ SWEEP_CONFIG_FULL = {
         },
         # Fixed small model architecture
         "d_model": {
-            "values": [64, 128, 256, 512, 1024, 2048]
+            "values": [512]
         },
         "n_layers": {
-            "values": [1, 2, 4]
+            "values": [1]
         },
         "n_heads": {
-            "values": [1, 2, 4, 8, 16]
+            "values": [1]
         },
         "d_ff": {
-            "values": [64, 128, 256, 512, 1024, 2048]
+            "values": [64]
         },
         "dropout_prob": {
-            "values": [0.0, 0.01, 0.1]
+            "values": [0.1]
         },
         "length_penalty_weight": {
-            "values": [0.0, 0.01, 0.05, 0.1, 0.25, 0.5]
+            "values": [0.01]
         }
     }
 }

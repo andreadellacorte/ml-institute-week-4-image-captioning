@@ -45,10 +45,10 @@ SWEEP_CONFIG = {
             "values": ["5000"]
         },
         "batch_size": {
-            "values": [128, 256, 512]
+            "values": [32, 64, 128]
         },
         "learning_rate": {
-            "values": [0.0001, 0.0005, 0.001]
+            "values": [0.001, 0.005, 0.01]
         },
         "num_epochs": {
             "values": [10]  # Reduced epochs for faster debugging turn-around
@@ -63,22 +63,22 @@ SWEEP_CONFIG = {
             "value": "full_sentence"
         },
         "d_model": {
-            "values": [128, 256, 512]
+            "values": [128, 256]
         },
         "n_layers": {
-            "values": [1, 2, 4]
+            "values": [1, 2]
         },
         "n_heads": {
-            "values": [1, 2, 4]
+            "values": [1, 2]
         },
         "d_ff": {
-            "values": [128, 256, 512]
+            "values": [32, 64, 128]
         },
         "dropout_prob": {
-            "values": [0.01, 0.03, 0.05]
+            "values": [0.05]
         },
         "length_penalty_weight": {
-            "values": [0.01, 0.03, 0.05]
+            "values": [0.001, 0.005, 0.01]
         },
         "patience": {
             "values": [3]

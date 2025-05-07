@@ -337,8 +337,8 @@ def save_model(run, model, epoch):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Save the model use the wandb run name for the filename
-    model_save_path = CHECKPOINTS_DATA_DIR / f"{timestamp}_{run.name}_model_{epoch}.pth"
-    torch.save(model.state_dict(), model_save_path)
+    model_save_path = CHECKPOINTS_DATA_DIR / f"{timestamp}_{run.name}_model_{epoch}.pt"
+    torch.save(model, model_save_path)
     
     if WANDB_CONFIG["save_model"]:
         wandb.save(model_save_path)

@@ -108,6 +108,9 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         clip_params = sum(p.numel() for p in self.clip.parameters())
         logger.info(f"CLIP parameters (all frozen): {clip_params}")
         logger.info(f"Decoder parameters (all trainable): {sum(p.numel() for p in self.parameters()) - clip_params}")
+    
+    def process_images(self, images):
+        return self.processor(images=images, return_tensors="pt")
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():

@@ -8,7 +8,7 @@ from src.model import UnifiedAutoregressiveDecoder
 
 from src.dataset import ImageCaptioningDataset
 
-from src.config import PROCESSED_DATA_DIR, FIGURES_DIR
+from src.config import PROCESSED_DATA_DIR, FIGURES_DIR, CHECKPOINTS_DATA_DIR
 
 # Import the plotting function
 from src.plots import plot_images_with_captions
@@ -26,10 +26,11 @@ from torch.amp import GradScaler, autocast
 
 # WandB Configuration Settings
 WANDB_CONFIG = {
-    # Set to 'online', 'offline', or 'disabled'
+    # Set to 'online', 'offline'
     "mode": "online",
     "project": "mlx7-week-4-image-captioning",
     "entity": None,  # Set to your wandb username/team or None
+    "save_model": False, # Set to True if you want to save the model
 }
 
 # Sweep Configuration for Debugging Slowdown
@@ -41,13 +42,13 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["full"]
+            "values": ["5000"]
         },
         "batch_size": {
-            "values": [512]
+            "values": [128, 256, 512]
         },
         "learning_rate": {
-            "values": [0.003]
+            "values": [0.0001, 0.0005, 0.001]
         },
         "num_epochs": {
             "values": [10]  # Reduced epochs for faster debugging turn-around
@@ -62,28 +63,28 @@ SWEEP_CONFIG = {
             "value": "full_sentence"
         },
         "d_model": {
-            "values": [512]
+            "values": [128, 256, 512]
         },
         "n_layers": {
-            "values": [8]
+            "values": [1, 2, 4]
         },
         "n_heads": {
-            "values": [16]
+            "values": [1, 2, 4]
         },
         "d_ff": {
-            "values": [512]
+            "values": [128, 256, 512]
         },
         "dropout_prob": {
-            "values": [0.05]
+            "values": [0.01, 0.03, 0.05]
         },
         "length_penalty_weight": {
-            "values": [0.0]
+            "values": [0.01, 0.03, 0.05]
         },
         "patience": {
             "values": [3]
         },
         "clean_captions": {
-            "values": [False]
+            "values": [True, False]
         },
     }
 }
@@ -186,6 +187,11 @@ def train_model():
         dropout_prob=config.dropout_prob,  # Pass dropout_prob from config
     )
 
+    # log the number of parameters to wandb
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Number of trainable parameters: {num_params / 1e6:.2f}M")
+    wandb.log({"num_params": num_params})
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -276,8 +282,6 @@ def train_model():
         )
         epoch_end_time = datetime.now()
         epoch_duration = (epoch_end_time - epoch_start_time).total_seconds()
-
-        save_model(run, model, epoch)
         
         logger.info(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
         
@@ -333,9 +337,11 @@ def save_model(run, model, epoch):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Save the model use the wandb run name for the filename
-    model_save_path = PROCESSED_DATA_DIR / "checkpoints" / f"{timestamp}_{run.name}_model_{epoch}.pth"
+    model_save_path = CHECKPOINTS_DATA_DIR / f"{timestamp}_{run.name}_model_{epoch}.pth"
     torch.save(model.state_dict(), model_save_path)
-    wandb.save(model_save_path, base_path=PROCESSED_DATA_DIR / "checkpoints")
+    
+    if WANDB_CONFIG["save_model"]:
+        wandb.save(model_save_path)
 
     logger.info(f"Model saved to {model_save_path} and uploaded to wandb.")
 

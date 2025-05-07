@@ -1,3 +1,5 @@
+from loguru import logger
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,7 +42,6 @@ class MultiHeadAttention(nn.Module):
         out = out.transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
 
-
 class DecoderBlock(nn.Module):
     def __init__(self, d_model=512, n_heads=8, d_ff=2048, dropout_prob=0.1):  # Added dropout_prob
         super().__init__()
@@ -78,10 +79,8 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.max_len = max_len
         self.d_model = d_model
 
-        # Freze clip models
-        for p in self.clip.vision_model.parameters():
-            p.requires_grad = False
-        for p in self.clip.text_model.embeddings.parameters():
+        # Freeze the entire CLIP model
+        for p in self.clip.parameters():
             p.requires_grad = False
 
         self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
@@ -96,6 +95,19 @@ class UnifiedAutoregressiveDecoder(nn.Module):
             for m in self.modules():
                 if isinstance(m, nn.Dropout):
                     m.p = 0.0
+
+        # logger the model architecture and parameters
+        # logger.info(f"Model architecture: {self}")
+        logger.info(f"Total parameters: {sum(p.numel() for p in self.parameters())}")
+
+        # assert clip has 0 trainable parameters
+
+        assert not any(p.requires_grad for p in self.clip.parameters()), "CLIP model should have no trainable parameters"
+
+        # print minus the number parameters in clip
+        clip_params = sum(p.numel() for p in self.clip.parameters())
+        logger.info(f"CLIP parameters (all frozen): {clip_params}")
+        logger.info(f"Decoder parameters (all trainable): {sum(p.numel() for p in self.parameters()) - clip_params}")
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():

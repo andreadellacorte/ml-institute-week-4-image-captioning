@@ -27,7 +27,7 @@ from torch.amp import GradScaler, autocast
 # WandB Configuration Settings
 WANDB_CONFIG = {
     # Set to 'online', 'offline', or 'disabled'
-    "mode": "offline",
+    "mode": "online",
     "project": "mlx7-week-4-image-captioning",
     "entity": None,  # Set to your wandb username/team or None
 }

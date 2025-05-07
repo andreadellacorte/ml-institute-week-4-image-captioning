@@ -2,7 +2,6 @@ from loguru import logger
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from transformers import CLIPModel, CLIPTokenizer, CLIPProcessor
 from PIL import Image
 import io
@@ -37,7 +36,7 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             scores = scores.masked_fill(mask == 0, float("-inf"))
 
-        attn = F.softmax(scores, dim=-1)
+        attn = torch.nn.functional.softmax(scores, dim=-1)
         out = attn @ v  # (B, H, T, D/H)
         out = out.transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
@@ -96,25 +95,30 @@ class UnifiedAutoregressiveDecoder(nn.Module):
                 if isinstance(m, nn.Dropout):
                     m.p = 0.0
 
-        # logger the model architecture and parameters
-        # logger.info(f"Model architecture: {self}")
-        logger.info(f"Total parameters: {sum(p.numel() for p in self.parameters())}")
+
+        clip_params = sum(p.numel() for p in self.clip.parameters())
+        decoder_params = sum(p.numel() for p in self.parameters()) - clip_params
+        total_params = clip_params + decoder_params
+
+        logger.info(f"Total parameters: {total_params}")
 
         # assert clip has 0 trainable parameters
-
         assert not any(p.requires_grad for p in self.clip.parameters()), "CLIP model should have no trainable parameters"
 
         # print minus the number parameters in clip
-        clip_params = sum(p.numel() for p in self.clip.parameters())
+        
         logger.info(f"CLIP parameters (all frozen): {clip_params}")
-        logger.info(f"Decoder parameters (all trainable): {sum(p.numel() for p in self.parameters()) - clip_params}")
+        logger.info(f"Decoder parameters (all trainable): {decoder_params}")
+
+        # print the ratio of decoder parameters to total parameters
+        logger.info(f"Decoder parameters ratio: {decoder_params / total_params:.2%}%")
     
     def process_images(self, images):
         return self.processor(images=images, return_tensors="pt")
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
-            return self.clip.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, X, D)
+            return self.clip.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, P, D)
 
     def get_text_input_embeddings(self, input_ids):
         with torch.no_grad():
@@ -124,13 +128,13 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)
 
     def forward(self, pixel_values, input_ids, attention_mask=None):
-        image_emb = self.get_image_embedding(pixel_values)  # (B, X, D)
+        image_emb = self.get_image_embedding(pixel_values)  # (B, P, D)
         text_emb = self.get_text_input_embeddings(input_ids)  # (B, T, D)
 
-        image_proj = self.image_proj(image_emb)  # (B, X, D)
+        image_proj = self.image_proj(image_emb)  # (B, P, D)
         text_proj = self.text_proj(text_emb)  # (B, T, D)
         
-        x = torch.cat([image_proj, text_proj], dim=1)  # (B, X+T, D)
+        x = torch.cat([image_proj, text_proj], dim=1)  # (B, P+T, D)
 
         seq_len = x.size(1)
         n_patches = image_proj.shape[1]  # Use actual number of patches at runtime
@@ -140,7 +144,10 @@ class UnifiedAutoregressiveDecoder(nn.Module):
 
         # Padding mask
         if attention_mask is not None:
-            pad_mask = F.pad(attention_mask, (n_patches, 0), value=1)  # Pad for all image patches
+            pad_mask = torch.nn.functional.pad(
+                attention_mask,
+                (n_patches, 0),
+                value=1)  # Pad for all image patches
             mask = mask * pad_mask[:, None, None, :]
 
         for block in self.decoder_blocks:

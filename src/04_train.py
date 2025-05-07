@@ -287,7 +287,7 @@ def train_model():
         epoch_end_time = datetime.now()
         epoch_duration = (epoch_end_time - epoch_start_time).total_seconds()
         
-        logger.info(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
+        logger.success(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
         
         # Log metrics to wandb
         wandb.log({
@@ -299,28 +299,28 @@ def train_model():
         # Evaluate model every epoch
         evaluate(run, model, test_dataset, epoch)
 
-        # Validate model every 5 epochs
-        if (epoch + 1) % 5 == 0 or epoch == config.num_epochs - 1:
-            val_loss = validate(
-                model, 
-                val_dataloader, 
-                criterion, 
-                config.length_penalty_weight, 
-                model.tokenizer.pad_token_id 
-            )
-            wandb.log({"validation_loss": val_loss}) # Log validation loss
+        val_loss = validate(
+            model, 
+            val_dataloader, 
+            criterion, 
+            config.length_penalty_weight, 
+            model.tokenizer.pad_token_id 
+        )
 
-            # Early stopping logic
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                epochs_without_improvement = 0
-                best_model_state = model.state_dict()  # Save best model weights
-            else:
-                epochs_without_improvement += 1
-                logger.info(f"No improvement in validation loss for {epochs_without_improvement} epoch(s).")
-                if epochs_without_improvement >= patience:
-                    logger.info("Early stopping triggered.")
-                    break
+        wandb.log({"validation_loss": val_loss}) # Log validation loss
+
+        # Early stopping logic
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
+            logger.success(f"Validation loss improved to {best_val_loss:.4f}. Saving model.")
+            best_model_state = model.state_dict()  # Save best model weights
+        else:
+            epochs_without_improvement += 1
+            logger.warning(f"No improvement in validation loss for {epochs_without_improvement}/{patience} epoch(s).")
+            if epochs_without_improvement >= patience:
+                logger.info("Early stopping triggered.")
+                break
 
     # Optionally restore best model weights
     if best_model_state is not None:
@@ -328,6 +328,8 @@ def train_model():
         logger.info("Loaded best model weights from early stopping.")
 
     save_model(run, model, "best")
+
+    logger.success("Training completed successfully.")
 
     # Final logging of metrics
     wandb.log({

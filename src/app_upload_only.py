@@ -6,7 +6,7 @@ import torch
 def load_model():
     from transformers import CLIPProcessor
     MODEL_PATH = 'models/model.pth'
-    model = torch.load(MODEL_PATH, map_location="cpu")
+    model = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16", use_fast=True)
     model.processor = processor
     model.tokenizer = processor.tokenizer

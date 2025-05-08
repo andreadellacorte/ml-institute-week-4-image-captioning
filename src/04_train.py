@@ -87,10 +87,7 @@ SWEEP_CONFIG = {
             "values": [0.01, 0.05]
         },
         "patience": {
-            "values": [5]
-        },
-        "patience_min_improvement_percent": {
-            "values": [0.05]
+            "values": [3]
         },
         "max_captions_per_image": {
             "values": [5]
@@ -324,18 +321,16 @@ def train_model():
             epochs_without_improvement = 0
             best_model_state = model.state_dict()  # Save best model weights
         else:
-            min_improvement = best_val_loss * config.patience_min_improvement_percent
-            if val_loss < best_val_loss - min_improvement:
-                logger.success(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}")
-                logger.success(f"Validation loss new best: {val_loss:.4f}. Caching model.")
+            logger.info(f"Validation loss this epoch: {val_loss:.4f} - Prior best loss: {best_val_loss:.4f}.")
+            logger.info(f"Validation loss delta: {val_loss - best_val_loss:.4f} (negative = improved).")
+            if val_loss < best_val_loss:
+                logger.success(f"Validation loss has new best. Caching model.")
                 best_val_loss = val_loss
                 epochs_without_improvement = 0
                 best_model_state = model.state_dict()  # Save best model weights
             else:
                 epochs_without_improvement += 1
-                logger.warning(f"Validation loss did not improve by minimum expected amount. Current loss: {val_loss:.4f}, Best loss: {best_val_loss:.4f}.")
-                logger.warning(f"Minimum expected improvement: {min_improvement:.4f}")
-                logger.warning(f"Epochs without improvement: {epochs_without_improvement}/{patience}")
+                logger.warning(f"Validation loss did not improve. Epochs since improved: {epochs_without_improvement}/{patience}")
                 if epochs_without_improvement >= patience:
                     logger.warning("Early stopping triggered.")
                     break

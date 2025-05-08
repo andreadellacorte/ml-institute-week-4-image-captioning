@@ -23,7 +23,7 @@ def load_data():
 def load_model():
     from transformers import CLIPProcessor
     # Load the whole model (architecture + weights)
-    model = torch.load(MODEL_PATH, map_location="cpu")
+    model = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
     # Re-initialize the tokenizer and processor
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", use_fast=True)
     model.processor = processor

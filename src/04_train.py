@@ -358,7 +358,7 @@ def train_model():
 
     # Final logging of metrics
     wandb.log({
-        "final_train_loss": loss,
+        "final_epoch": epoch + 1,
     })
     
     # Close wandb run

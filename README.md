@@ -4,58 +4,75 @@
     <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
 </a>
 
-In this week's project, we will build a multimodal Transformer model which generates captions for images.
+## Objective
+This project aims to build a multimodal Transformer-based model that generates natural language captions for images. The goal is to explore and implement state-of-the-art techniques for image captioning using deep learning, focusing on combining visual and textual modalities.
+
+## Dataset
+- **Flickr30k**: The dataset used is [Flickr30k](https://huggingface.co/datasets/nlphuji/flickr30k), which contains 31,000 images, each annotated with five captions. Data is loaded and processed from HuggingFace Datasets (`nlphuji/flickr30k`).
+
+## Model Architecture
+- **Vision Encoder**: Frozen CLIP Vision Transformer (ViT) from `openai/clip-vit-base-patch32` or `patch16`.
+- **Text Encoder**: Frozen CLIP text encoder.
+- **Transformer Decoder**: A custom Transformer decoder (UnifiedAutoregressiveDecoder) with configurable depth, width, and attention heads. The decoder receives image embeddings and autoregressively generates captions.
+- **Training**: Only the decoder is trained; CLIP encoders are kept frozen. Training uses cross-entropy loss and supports mixed-precision (AMP) and early stopping.
 
 ## Project Organization
 
 ```
-├── LICENSE            <- Open-source license if one is chosen
-├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
-├── README.md          <- The top-level README for developers using this project.
+├── LICENSE
+├── Makefile
+├── README.md
+├── requirements-cpu.txt      <- Requirements for CPU training/inference
+├── requirements-gpu.txt      <- Requirements for GPU training/inference
+├── pyproject.toml
+├── setup.cfg
+├── setup.py
+├── setup.sh
+├── output.log
+├── script.pid
+│
 ├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
+│   ├── external
+│   ├── interim
+│   ├── processed
+│   │   └── flickr30k
+│   └── raw
 │
-├── docs               <- A default mkdocs project; see www.mkdocs.org for details
+├── docs
 │
-├── models             <- Trained and serialized models, model predictions, or model summaries
+├── models
 │
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`.
+├── notebooks
+│   └── flickr30k_eda.ipynb
 │
-├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         src and configuration for tools like black
+├── references
+│   └── *.pdf
 │
-├── references         <- Data dictionaries, manuals, and all other explanatory materials.
+├── reports
+│   └── figures
 │
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
+├── src
+│   ├── __init__.py
+│   ├── 01_get_data.py        <- Download and serialize Flickr30k
+│   ├── 02_process_data.py    <- Process and clean data
+│   ├── 03_prove_overfit.py   <- Overfit test on a single image
+│   ├── 04_train.py           <- Main training script
+│   ├── app_flickr.py         <- Streamlit demo app for Flickr30k
+│   ├── app_upload_only.py    <- Streamlit app for user-uploaded images
+│   ├── config.py
+│   ├── dataset.py            <- PyTorch Dataset for image-caption pairs
+│   ├── model.py              <- Model architecture (CLIP + Transformer decoder)
+│   ├── plots.py
+│   ├── test.py
+│   └── modeling/
+│       ├── __init__.py
+│       ├── predict.py        <- Inference utilities
+│       └── train.py          <- (Optional) Training utilities
 │
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
+├── tests
+│   └── test_data.py
 │
-├── setup.cfg          <- Configuration file for flake8
+├── wandb/                    <- Weights & Biases experiment logs
 │
-└── src   <- Source code for use in this project.
-    │
-    ├── __init__.py             <- Makes src a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    └── plots.py                <- Code to create visualizations
 ```
-
---------
 

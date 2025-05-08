@@ -3,6 +3,7 @@
 wandb/*
 models/
 
+script.pid
 
 # Mac OS-specific storage files
 .DS_Store

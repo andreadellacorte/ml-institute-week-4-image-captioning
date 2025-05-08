@@ -42,7 +42,7 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["full"]
+            "values": ["10000"]
         },
         "clip_patch_size": {
             "values": [32]
@@ -337,7 +337,9 @@ def train_model():
             best_model_state = model.state_dict()  # Save best model weights
         else:
             epochs_without_improvement += 1
-            logger.warning(f"No significant improvement in validation loss for {epochs_without_improvement}/{patience} epoch(s).")
+            logger.warning(f"Validation loss did not improve by minimum expected amount. Current loss: {val_loss:.4f}, Best loss: {best_val_loss:.4f}.")
+            logger.warning(f"Minimum expected improvement: {min_improvement:.4f}")
+            logger.warning(f"Epochs without improvement: {epochs_without_improvement}/{patience}")
             if epochs_without_improvement >= patience:
                 logger.warning("Early stopping triggered.")
                 break

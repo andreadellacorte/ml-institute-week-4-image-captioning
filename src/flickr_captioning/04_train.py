@@ -45,7 +45,7 @@ SWEEP_CONFIG = {
             "values": ["full"]
         },
         "clip_patch_size": {
-            "values": [16, 32]
+            "values": [32]
         },
         "batch_size": {
             "values": [16, 32, 64, 128]
@@ -66,22 +66,22 @@ SWEEP_CONFIG = {
             "values": ["adamw"]
         },
         "label_smoothing": {
-            "values": [0.02, 0.1, 0.5]
+            "values": [0.02]
         },
         "max_len": {
             "value": 20
         },
         "d_model": {
-            "values": [64, 128]
+            "values": [64]
         },
         "n_layers": {
-            "values": [4, 6, 8]
+            "values": [2]
         },
         "n_heads": {
             "values": [2, 4]
         },
         "d_ff": {
-            "values": [32, 64]
+            "values": [32]
         },
         "dropout_prob": {
             "values": [0.01, 0.05]

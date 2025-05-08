@@ -12,7 +12,7 @@ import csv
 def main(
     # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
     hf_dataset: str = "lmms-lab/VQAv2",
-    output_path: Path = RAW_DATA_DIR / "VQAv2"
+    output_path: Path = PROCESSED_DATA_DIR / "VQAv2"
     # ----------------------------------------------
 ):
     sizes = {
@@ -31,25 +31,14 @@ def main(
     # Make sure output directory exists
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Only load up to 15,000 images from the test split using streaming
-    dataset = load_dataset(hf_dataset, split="test", streaming=True)
-
-    logger.info(f"Dataset loaded.")
-    logger.info(f"Dataset info: {dataset}")
-    
-    # Prepare all items in memory (streaming, so must iterate once)
-    all_items = []
-    for item in dataset:
-        all_items.append(item)
-        if len(all_items) >= max(sizes.keys()):
-            break
-
+    # Do not cache all items in memory; process streaming dataset for each size
     for size, size_str in sizes.items():
-        logger.info(f"Processing first {size} items...")
-        subset = all_items[:size]
+        logger.info(f"Loading dataset for first {size} items...")
+        dataset = load_dataset(hf_dataset, split=f"test", streaming=True)
         index_rows = []
-        images_rows = []
-        for item in subset:
+        images_rows = {}
+        count = 0
+        for item in dataset:
             image_id = str(item["image_id"])
             question_id = str(item["question_id"])
             question  = item["question"]
@@ -65,13 +54,15 @@ def main(
             img_bytes = io.BytesIO()
             img_format = item["image"].format or "PNG"
             item["image"].save(img_bytes, format=img_format)
-            images_rows.append({
-                "image_id": image_id,
+            images_rows[image_id] = {
                 "image_bytes": img_bytes.getvalue(),
                 "image_format": img_format,
                 "image_size": item["image"].size,
                 "image_mode": item["image"].mode
-            })
+            }
+            count += 1
+            if count >= size:
+                break
         # Save index
         index_file = output_path / f"{size_str}_index.pkl"
         with open(index_file, "wb") as f:

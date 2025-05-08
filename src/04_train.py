@@ -92,6 +92,9 @@ SWEEP_CONFIG = {
         "patience": {
             "values": [3]
         },
+        "patience_min_improvement_percent": {
+            "values": [0.1]
+        },
         "max_captions_per_image": {
             "values": [5]
         },
@@ -323,8 +326,9 @@ def train_model():
 
         wandb.log({"validation_loss": val_loss}) # Log validation loss
 
-        # Early stopping logic
-        if val_loss < best_val_loss:
+        # Early stopping logic with minimum expected improvement (percentage-based)
+        min_improvement = best_val_loss * config.patience_min_improvement_percent
+        if val_loss < best_val_loss - min_improvement:
             if best_model_state is not None:
                 logger.success(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}")
             logger.success(f"Validation loss new best: {val_loss:.4f}. Caching model.")
@@ -333,9 +337,9 @@ def train_model():
             best_model_state = model.state_dict()  # Save best model weights
         else:
             epochs_without_improvement += 1
-            logger.warning(f"No improvement in validation loss for {epochs_without_improvement}/{patience} epoch(s).")
+            logger.warning(f"No significant improvement in validation loss for {epochs_without_improvement}/{patience} epoch(s).")
             if epochs_without_improvement >= patience:
-                logger.info("Early stopping triggered.")
+                logger.warning("Early stopping triggered.")
                 break
 
     # Optionally restore best model weights

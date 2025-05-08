@@ -4,7 +4,7 @@ import time
 
 from datetime import datetime
 
-from src.flickr_captioning.model import UnifiedAutoregressiveDecoder
+from src.model import UnifiedAutoregressiveDecoder
 
 from src.flickr_captioning.dataset import ImageCaptioningDataset
 

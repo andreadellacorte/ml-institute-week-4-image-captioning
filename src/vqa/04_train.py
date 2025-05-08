@@ -39,7 +39,7 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["10"]
+            "values": ["10000"]
         },
         "clip_patch_size": {
             "values": [16, 32]

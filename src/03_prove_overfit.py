@@ -18,8 +18,6 @@ def set_seed(seed):
     random.seed(seed)
     torch.manual_seed(seed)
 
-processed_image_tensors = {}
-
 def main():
     # Set wandb mode
     os.environ["WANDB_MODE"] = "disabled"  # Disable wandb for overfit test
@@ -44,13 +42,13 @@ def main():
 
     # Model config (fixed for overfit, dropout=0)
     model = UnifiedAutoregressiveDecoder(
-        clip_model_name="openai/clip-vit-base-patch32",
+        clip_model_name="openai/clip-vit-base-patch16",
         max_len=25,
-        d_model=512,
-        n_layers=6,
+        d_model=256,
+        n_layers=2,
         n_heads=8,
-        d_ff=2048,
-        dropout_prob=0.0,  # Explicitly set dropout to 0
+        d_ff=256,
+        dropout_prob=0.1,  # Explicitly set dropout to 0
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,10 +57,7 @@ def main():
     dataset = ImageCaptioningDataset(
         train_images,
         captions,
-        model,
-        processed_image_tensors)
-    
-    processed_image_tensors.update(dataset.processed_image_tensors)
+        model)
 
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2, shuffle=True)
 
@@ -70,12 +65,9 @@ def main():
     val_dataset = ImageCaptioningDataset(
         test_images,
         captions,
-        model,
-        processed_image_tensors)
-    
-    processed_image_tensors.update(val_dataset.processed_image_tensors)
+        model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)  # Reduced LR from 1e-2 to 1e-4
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # Reduced LR from 1e-2 to 1e-4
     criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
 
     # Print detailed debug info for the first sample

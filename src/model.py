@@ -2,7 +2,7 @@ from loguru import logger
 
 import torch
 import torch.nn as nn
-from transformers import CLIPModel, CLIPTokenizer, CLIPProcessor
+from transformers import CLIPVisionModel, CLIPTextModel, CLIPProcessor
 from PIL import Image
 import io
 from src.config import PROCESSED_DATA_DIR
@@ -72,18 +72,22 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         dropout_prob=0.1,  # Added dropout_prob
     ):
         super().__init__()
-        self.clip = CLIPModel.from_pretrained(clip_model_name)
-        self.tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
+        self.vision_model = CLIPVisionModel.from_pretrained(clip_model_name)
+        self.text_model = CLIPTextModel.from_pretrained(clip_model_name)
         self.processor = CLIPProcessor.from_pretrained(clip_model_name, use_fast=True)
+        self.tokenizer = self.processor.tokenizer
         self.max_len = max_len
         self.d_model = d_model
 
         # Freeze the entire CLIP model
-        for p in self.clip.parameters():
+        for p in self.vision_model.parameters():
+            p.requires_grad = False
+        for p in self.text_model.parameters():
             p.requires_grad = False
 
-        self.image_proj = nn.Linear(self.clip.vision_model.config.hidden_size, d_model)
-        self.text_proj = nn.Linear(self.clip.text_model.config.hidden_size, d_model)  # Added text projection
+        self.image_proj = nn.Linear(self.vision_model.config.hidden_size, d_model, bias=False)  # Added image projection
+        self.text_proj = nn.Linear(self.text_model.config.hidden_size, d_model, bias= False)  # Added text projection
+
         self.decoder_blocks = nn.ModuleList([
             DecoderBlock(d_model, n_heads, d_ff, dropout_prob=dropout_prob) for _ in range(n_layers)  # Pass dropout_prob
         ])
@@ -96,14 +100,17 @@ class UnifiedAutoregressiveDecoder(nn.Module):
                     m.p = 0.0
 
 
-        clip_params = sum(p.numel() for p in self.clip.parameters())
+        clip_params = \
+            sum(p.numel() for p in self.vision_model.parameters() if p.requires_grad is False) \
+            + sum(p.numel() for p in self.text_model.parameters() if p.requires_grad is False)
         decoder_params = sum(p.numel() for p in self.parameters()) - clip_params
         total_params = clip_params + decoder_params
 
         logger.info(f"Total parameters: {total_params}")
 
         # assert clip has 0 trainable parameters
-        assert not any(p.requires_grad for p in self.clip.parameters()), "CLIP model should have no trainable parameters"
+        assert not any(p.requires_grad for p in self.vision_model.parameters()), "CLIP model should have no trainable parameters"
+        assert not any(p.requires_grad for p in self.text_model.parameters()), "CLIP model should have no trainable parameters"
 
         # print minus the number parameters in clip
         
@@ -118,11 +125,11 @@ class UnifiedAutoregressiveDecoder(nn.Module):
 
     def get_image_embedding(self, pixel_values):
         with torch.no_grad():
-            return self.clip.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, P, D)
+            return self.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, P, D)
 
     def get_text_input_embeddings(self, input_ids):
         with torch.no_grad():
-            return self.clip.text_model.embeddings(input_ids)
+            return self.text_model(input_ids).last_hidden_state  # (B, T, D)
 
     def causal_mask(self, sz, device):
         return torch.tril(torch.ones((sz, sz), device=device)).unsqueeze(0).unsqueeze(0)

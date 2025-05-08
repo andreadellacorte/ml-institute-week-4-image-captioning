@@ -96,7 +96,7 @@ SWEEP_CONFIG = {
             "values": [5]
         },
         "clean_captions": {
-            "values": [True, False]
+            "values": [False]
         },
     }
 }
@@ -110,25 +110,6 @@ def set_seed(seed):
     # torch.cuda.manual_seed_all(seed)
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
-
-class LabelSmoothingCrossEntropy(torch.nn.Module):
-    def __init__(self, smoothing=0.1, ignore_index=-100):
-        super().__init__()
-        self.smoothing = smoothing
-        self.ignore_index = ignore_index
-
-    def forward(self, pred, target):
-        n_class = pred.size(1)
-        log_preds = torch.nn.functional.log_softmax(pred, dim=1)
-        with torch.no_grad():
-            true_dist = torch.zeros_like(log_preds)
-            true_dist.fill_(self.smoothing / (n_class - 1))
-            ignore = target == self.ignore_index
-            target = target.clone()
-            target[ignore] = 0
-            true_dist.scatter_(1, target.unsqueeze(1), 1.0 - self.smoothing)
-            true_dist[ignore] = 0
-        return torch.mean(torch.sum(-true_dist * log_preds, dim=1))
 
 def main():
     """Main function that serves as both regular training entry point and sweep agent."""

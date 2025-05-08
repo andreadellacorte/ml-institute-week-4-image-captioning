@@ -45,19 +45,19 @@ SWEEP_CONFIG = {
             "values": ["full"]
         },
         "clip_patch_size": {
-            "values": [32]
+            "values": [16, 32]
         },
         "batch_size": {
-            "values": [128, 256]
+            "values": [16, 32, 64, 128]
         },
         "learning_rate": {
             "values": [0.001, 0.005]
         },
         "scheduler_step": {
-            "values": [5, 10]
+            "values": [3, 5]
         },
         "scheduler_gamma": {
-            "values": [0.1, 0.5]
+            "values": [0.1]
         },
         "num_epochs": {
             "values": [20]
@@ -65,17 +65,17 @@ SWEEP_CONFIG = {
         "optimizer": {
             "values": ["adamw"]
         },
+        "label_smoothing": {
+            "values": [0.02, 0.1, 0.5]
+        },
         "max_len": {
             "value": 20
         },
-        "step_function": {
-            "value": "full_sentence"
-        },
         "d_model": {
-            "values": [128, 256]
+            "values": [64, 128]
         },
         "n_layers": {
-            "values": [2, 4]
+            "values": [4, 6, 8]
         },
         "n_heads": {
             "values": [2, 4]
@@ -87,7 +87,7 @@ SWEEP_CONFIG = {
             "values": [0.01, 0.05]
         },
         "patience": {
-            "values": [3]
+            "values": [5]
         },
         "patience_min_improvement_percent": {
             "values": [0.05]
@@ -110,6 +110,25 @@ def set_seed(seed):
     # torch.cuda.manual_seed_all(seed)
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
+
+class LabelSmoothingCrossEntropy(torch.nn.Module):
+    def __init__(self, smoothing=0.1, ignore_index=-100):
+        super().__init__()
+        self.smoothing = smoothing
+        self.ignore_index = ignore_index
+
+    def forward(self, pred, target):
+        n_class = pred.size(1)
+        log_preds = torch.nn.functional.log_softmax(pred, dim=1)
+        with torch.no_grad():
+            true_dist = torch.zeros_like(log_preds)
+            true_dist.fill_(self.smoothing / (n_class - 1))
+            ignore = target == self.ignore_index
+            target = target.clone()
+            target[ignore] = 0
+            true_dist.scatter_(1, target.unsqueeze(1), 1.0 - self.smoothing)
+            true_dist[ignore] = 0
+        return torch.mean(torch.sum(-true_dist * log_preds, dim=1))
 
 def main():
     """Main function that serves as both regular training entry point and sweep agent."""
@@ -173,7 +192,6 @@ def train_model():
     
     # Convert dictionary to list for proper splitting
     image_ids = list(images.keys())
-    random.shuffle(image_ids)
     
     # Calculate split indices
     train_size = int(len(image_ids) * 0.9)
@@ -181,7 +199,9 @@ def train_model():
     
     # Split the image IDs
     train_ids = image_ids[:train_size]
+    random.shuffle(train_ids)
     test_ids = image_ids[train_size:train_size + test_size]
+    random.shuffle(test_ids)
     
     # Create dictionaries for each split
     train_images = {id: images[id] for id in train_ids}
@@ -264,17 +284,16 @@ def train_model():
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma)
 
-    # Use ignore_index for PAD tokens
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
+    # Use label smoothing cross-entropy as criterion
+    criterion = torch.nn.CrossEntropyLoss(
+        ignore_index=model.tokenizer.pad_token_id,
+        label_smoothing=config.label_smoothing
+    )
     
     # Initialize GradScaler for AMP if on CUDA
     scaler = GradScaler(enabled=(device.type == 'cuda'))
 
-    # Select step function based on config
-    if config.step_function == "logit_by_logit":
-        step_function_impl = logit_by_logit_step
-    else:  # Default to full_sentence
-        step_function_impl = full_sentence_step
+    step_function_impl = full_sentence_step
     
     best_val_loss = float('inf')
     patience = config.patience  # Number of epochs to wait for improvement
@@ -284,17 +303,12 @@ def train_model():
     # Training loop
     for epoch in range(config.num_epochs):
         epoch_start_time = datetime.now()
-        # Pass both the implementation and the name of the step function
-        # Also pass length_penalty_weight and pad_token_id
         loss = train_one_epoch(
             model, 
             train_dataloader, 
             optimizer, 
             criterion, 
             step_function_impl, 
-            config.step_function,
-            config.length_penalty_weight, # Pass new config param
-            model.tokenizer.pad_token_id, # Pass pad_token_id
             scaler # Pass GradScaler
         )
         epoch_end_time = datetime.now()
@@ -316,9 +330,7 @@ def train_model():
         val_loss = validate(
             model, 
             val_dataloader, 
-            criterion, 
-            config.length_penalty_weight, 
-            model.tokenizer.pad_token_id 
+            criterion
         )
 
         wandb.log({"validation_loss": val_loss}) # Log validation loss
@@ -385,7 +397,7 @@ def save_model(run, model, epoch, best_val_loss):
 
     logger.success(f"Model saved to {model_save_path} and uploaded to wandb.")
 
-def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl, step_function_name, length_penalty_weight, pad_token_id, scaler): # Added scaler
+def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl, scaler):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
@@ -411,14 +423,6 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
         
         # Autocast for the step function if on CUDA
         with autocast(device_type=device.type, enabled=use_amp):
-            if step_function_name == "logit_by_logit":
-                # logit_by_logit_step does not take attention_mask and returns a float
-                # It handles its own AMP scaling internally if needed
-                current_loss = step_function_impl(
-                    model, image_tensor, input_ids, label_ids, optimizer, criterion, scaler)
-                loss_val = current_loss  # Already a float
-                # Timings will use the initialized zero values as logit_by_logit doesn't break them down here.
-            else:  # full_sentence or other step functions following this pattern
                 # full_sentence_step takes attention_mask and returns a tensor and detailed timings
                 # AMP is handled by the autocast context here, scaler is passed for backward/step
                 loss_tensor, returned_timings = step_function_impl(
@@ -437,77 +441,26 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
 
     return total_loss / len(dataloader)
 
-def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion, scaler): # Added scaler, use_amp
+def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion, scaler):
     step_start_time = time.time()
     timings = {}
 
     optimizer.zero_grad()
-    
-    # Forward pass is already within autocast in train_one_epoch
     forward_start_time = time.time()
-    # No need for explicit autocast here if train_one_epoch's loop is already under autocast
     outputs = model(images, input_ids, attention_mask=attention_mask)
     timings['forward_time'] = time.time() - forward_start_time
-    
     loss_start_time = time.time()
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
-    
     timings['loss_time'] = time.time() - loss_start_time
-        
     backward_start_time = time.time()
-    # Scale loss and backward pass
     scaler.scale(loss).backward()
     timings['backward_time'] = time.time() - backward_start_time
-    
     optim_start_time = time.time()
-    # Optimizer step
     scaler.step(optimizer)
     scaler.update()
     timings['optim_time'] = time.time() - optim_start_time
-
     timings['total_step_time'] = time.time() - step_start_time
-    return loss, timings # Return tensor loss for .item() in the caller
-
-def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion, scaler):
-    seq_length = input_ids.shape[1]
-    batch_total_loss = 0
-    sequence_positions = 0
-    
-    for i in range(1, seq_length):
-        curr_input = input_ids[:, :i]
-        optimizer.zero_grad()
-        
-        # Forward pass with autocast
-        # No explicit autocast here if train_one_epoch's loop is already under autocast
-        outputs = model(images, curr_input)
-        
-        target_idx = i
-        if target_idx < seq_length:
-            curr_target = label_ids[:, target_idx]
-            last_token_logits = outputs[:, -1, :]
-            step_loss = criterion(last_token_logits, curr_target)
-
-            # Scale loss and backward pass
-            scaler.scale(step_loss).backward()
-            
-            # Optimizer step
-            scaler.step(optimizer)
-            scaler.update() # Call update after every step for logit_by_logit
-            
-            batch_total_loss += step_loss.item()
-            sequence_positions += 1
-        
-        if (curr_input == model.tokenizer.eos_token_id).any(dim=1).any():
-            break
-        if i >= model.max_len - 1:
-            break
-            
-    if sequence_positions > 0:
-        avg_batch_loss = batch_total_loss / sequence_positions
-    else:
-        avg_batch_loss = 0.0
-        
-    return avg_batch_loss
+    return loss, timings
 
 def evaluate(run, model, test_dataset, epoch):
     model.eval()
@@ -570,11 +523,10 @@ def evaluate(run, model, test_dataset, epoch):
         # Log the table
         wandb.log({"caption_examples": caption_table})
 
-def validate(model, val_loader, criterion, length_penalty_weight, pad_token_id):
+def validate(model, val_loader, criterion):
     model.eval()
     device = next(model.parameters()).device
     use_amp = (device.type == 'cuda') # Determine if AMP should be used for validation
-    
     total_loss = 0
     with torch.no_grad():
         for batch in val_loader:
@@ -582,18 +534,9 @@ def validate(model, val_loader, criterion, length_penalty_weight, pad_token_id):
             input_ids = batch["input_ids"].to(device)
             label_ids = batch["label_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            
-            with autocast(device_type=device.type, enabled=use_amp): # Use autocast for validation forward pass
+            with autocast(device_type=device.type, enabled=use_amp):
                 outputs = model(image_tensor, input_ids, attention_mask=attention_mask)
                 loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
-
-            # Add length penalty consistent with training
-            if length_penalty_weight > 0:
-                num_non_pad_tokens = (label_ids != pad_token_id).sum(dim=1).float()
-                avg_caption_length = num_non_pad_tokens.mean()
-                penalty = length_penalty_weight * avg_caption_length
-                loss = loss + penalty
-                
             total_loss += loss.item()
     avg_loss = total_loss / len(val_loader)
     logger.info(f"Validation loss: {avg_loss:.4f}")

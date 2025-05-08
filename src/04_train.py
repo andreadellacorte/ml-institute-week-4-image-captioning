@@ -42,25 +42,25 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["10000"]
+            "values": ["full"]
         },
         "clip_patch_size": {
             "values": [32]
         },
         "batch_size": {
-            "values": [128]
+            "values": [128, 256]
         },
         "learning_rate": {
             "values": [0.001, 0.005]
         },
         "scheduler_step": {
-            "values": [1, 2, 5, 10]
+            "values": [5, 10]
         },
         "scheduler_gamma": {
-            "values": [0.1, 0.5, 0.75]
+            "values": [0.1, 0.5]
         },
         "num_epochs": {
-            "values": [10]
+            "values": [20]
         },
         "optimizer": {
             "values": ["adamw"]
@@ -72,19 +72,19 @@ SWEEP_CONFIG = {
             "value": "full_sentence"
         },
         "d_model": {
-            "values": [128]
+            "values": [128, 256]
         },
         "n_layers": {
-            "values": [2]
+            "values": [2, 4]
         },
         "n_heads": {
-            "values": [2]
+            "values": [2, 4]
         },
         "d_ff": {
-            "values": [32]
+            "values": [32, 64]
         },
         "dropout_prob": {
-            "values": [0.05]
+            "values": [0.01, 0.05]
         },
         "length_penalty_weight": {
             "values": [0.0]
@@ -93,7 +93,7 @@ SWEEP_CONFIG = {
             "values": [3]
         },
         "patience_min_improvement_percent": {
-            "values": [0.1]
+            "values": [0.05]
         },
         "max_captions_per_image": {
             "values": [5]
@@ -349,7 +349,7 @@ def train_model():
         model.load_state_dict(best_model_state)
         logger.info("Loaded best model weights from early stopping.")
 
-    save_model(run, model, "best")
+    save_model(run, model, "best", best_val_loss)
 
     logger.success("Training completed successfully.")
 
@@ -361,7 +361,7 @@ def train_model():
     # Close wandb run
     wandb.finish()
 
-def save_model(run, model, epoch):
+def save_model(run, model, epoch, best_val_loss):
 
     # make a new folder in CHECKPOINTS_DATA_DIR for all the sweeps
     if not CHECKPOINTS_DATA_DIR.exists():
@@ -373,10 +373,8 @@ def save_model(run, model, epoch):
     if not sweep_dir.exists():
         sweep_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     # Save the model use the wandb run name for the filename
-    model_save_path = sweep_dir / f"{timestamp}_{run.name}_model_{epoch}.pt"
+    model_save_path = sweep_dir / f"{best_val_loss}_{run.name}_model_{epoch}.pt"
     torch.save(model, model_save_path)
     
     if WANDB_CONFIG["save_model"]:

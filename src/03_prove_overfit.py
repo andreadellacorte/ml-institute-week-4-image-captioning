@@ -128,15 +128,6 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     optimizer.zero_grad()
     outputs = model(images, input_ids, attention_mask=attention_mask)
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
-
-    length_penalty_weight = 0.1
-
-    # Apply length penalty
-    length_penalty = length_penalty_weight * (label_ids != model.tokenizer.pad_token_id).sum(dim=1).float()
-    loss = loss + length_penalty.mean()
-
-    # Backpropagation
-
     loss.backward()
     optimizer.step()
     return loss

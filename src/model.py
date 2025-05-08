@@ -2,7 +2,7 @@ from loguru import logger
 
 import torch
 import torch.nn as nn
-from transformers import CLIPVisionModel, CLIPTextModel, CLIPProcessor
+from transformers import CLIPVisionModel, CLIPTextModel, CLIPProcessor, CLIPTokenizer
 from PIL import Image
 import io
 from src.config import PROCESSED_DATA_DIR
@@ -75,7 +75,7 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         self.vision_model = CLIPVisionModel.from_pretrained(clip_model_name)
         self.text_model = CLIPTextModel.from_pretrained(clip_model_name)
         self.processor = CLIPProcessor.from_pretrained(clip_model_name, use_fast=True)
-        self.tokenizer = self.processor.tokenizer
+        self.tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
         self.max_len = max_len
         self.d_model = d_model
 

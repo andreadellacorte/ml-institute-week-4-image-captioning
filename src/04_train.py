@@ -86,9 +86,6 @@ SWEEP_CONFIG = {
         "dropout_prob": {
             "values": [0.01, 0.05]
         },
-        "length_penalty_weight": {
-            "values": [0.0]
-        },
         "patience": {
             "values": [3]
         },
@@ -118,7 +115,7 @@ def main():
     """Main function that serves as both regular training entry point and sweep agent."""
     # Set wandb mode
     os.environ["WANDB_MODE"] = WANDB_CONFIG["mode"]
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    #os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Create the sweep - remove the name parameter
     sweep_id = wandb.sweep(
@@ -327,22 +324,28 @@ def train_model():
         wandb.log({"validation_loss": val_loss}) # Log validation loss
 
         # Early stopping logic with minimum expected improvement (percentage-based)
-        min_improvement = best_val_loss * config.patience_min_improvement_percent
-        if val_loss < best_val_loss - min_improvement:
-            if best_model_state is not None:
-                logger.success(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}")
-            logger.success(f"Validation loss new best: {val_loss:.4f}. Caching model.")
+        if best_val_loss == float('inf'):
+            # Always accept the first validation loss as best
+            logger.success(f"Validation loss initial best: {val_loss:.4f}. Caching model.")
             best_val_loss = val_loss
             epochs_without_improvement = 0
             best_model_state = model.state_dict()  # Save best model weights
         else:
-            epochs_without_improvement += 1
-            logger.warning(f"Validation loss did not improve by minimum expected amount. Current loss: {val_loss:.4f}, Best loss: {best_val_loss:.4f}.")
-            logger.warning(f"Minimum expected improvement: {min_improvement:.4f}")
-            logger.warning(f"Epochs without improvement: {epochs_without_improvement}/{patience}")
-            if epochs_without_improvement >= patience:
-                logger.warning("Early stopping triggered.")
-                break
+            min_improvement = best_val_loss * config.patience_min_improvement_percent
+            if val_loss < best_val_loss - min_improvement:
+                logger.success(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}")
+                logger.success(f"Validation loss new best: {val_loss:.4f}. Caching model.")
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
+                best_model_state = model.state_dict()  # Save best model weights
+            else:
+                epochs_without_improvement += 1
+                logger.warning(f"Validation loss did not improve by minimum expected amount. Current loss: {val_loss:.4f}, Best loss: {best_val_loss:.4f}.")
+                logger.warning(f"Minimum expected improvement: {min_improvement:.4f}")
+                logger.warning(f"Epochs without improvement: {epochs_without_improvement}/{patience}")
+                if epochs_without_improvement >= patience:
+                    logger.warning("Early stopping triggered.")
+                    break
 
     # Optionally restore best model weights
     if best_model_state is not None:
@@ -412,17 +415,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
                 # logit_by_logit_step does not take attention_mask and returns a float
                 # It handles its own AMP scaling internally if needed
                 current_loss = step_function_impl(
-                    model, image_tensor, input_ids, label_ids, optimizer, criterion,
-                    length_penalty_weight, pad_token_id, device, scaler, use_amp # Pass scaler and use_amp
-                )
+                    model, image_tensor, input_ids, label_ids, optimizer, criterion, scaler)
                 loss_val = current_loss  # Already a float
                 # Timings will use the initialized zero values as logit_by_logit doesn't break them down here.
             else:  # full_sentence or other step functions following this pattern
                 # full_sentence_step takes attention_mask and returns a tensor and detailed timings
                 # AMP is handled by the autocast context here, scaler is passed for backward/step
                 loss_tensor, returned_timings = step_function_impl(
-                    model, image_tensor, input_ids, label_ids, attention_mask, optimizer, criterion,
-                    length_penalty_weight, pad_token_id, device, scaler, use_amp # Pass scaler and use_amp
+                    model, image_tensor, input_ids, label_ids, attention_mask, optimizer, criterion, scaler
                 )
                 loss_val = loss_tensor.item() # loss_tensor is already after potential scaling
                 timings = returned_timings # Update with actual timings from the step function
@@ -437,7 +437,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
 
     return total_loss / len(dataloader)
 
-def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion, length_penalty_weight, pad_token_id, device, scaler, use_amp): # Added scaler, use_amp
+def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion, scaler): # Added scaler, use_amp
     step_start_time = time.time()
     timings = {}
 
@@ -452,11 +452,6 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     loss_start_time = time.time()
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
     
-    if length_penalty_weight > 0:
-        num_non_pad_tokens = (label_ids != pad_token_id).sum(dim=1).float()
-        avg_caption_length = num_non_pad_tokens.mean()
-        penalty = length_penalty_weight * avg_caption_length
-        loss = loss + penalty
     timings['loss_time'] = time.time() - loss_start_time
         
     backward_start_time = time.time()
@@ -473,7 +468,7 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     timings['total_step_time'] = time.time() - step_start_time
     return loss, timings # Return tensor loss for .item() in the caller
 
-def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion, length_penalty_weight, pad_token_id, device, scaler, use_amp): # Added scaler, use_amp
+def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterion, scaler):
     seq_length = input_ids.shape[1]
     batch_total_loss = 0
     sequence_positions = 0
@@ -491,10 +486,6 @@ def logit_by_logit_step(model, images, input_ids, label_ids, optimizer, criterio
             curr_target = label_ids[:, target_idx]
             last_token_logits = outputs[:, -1, :]
             step_loss = criterion(last_token_logits, curr_target)
-            
-            if length_penalty_weight > 0:
-                penalty = length_penalty_weight * i 
-                step_loss = step_loss + penalty
 
             # Scale loss and backward pass
             scaler.scale(step_loss).backward()

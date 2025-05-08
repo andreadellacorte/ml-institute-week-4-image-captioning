@@ -1,6 +1,6 @@
-from src.model import UnifiedAutoregressiveDecoder
+from src.flickr_captioning.model import UnifiedAutoregressiveDecoder
 
-from src.dataset import ImageCaptioningDataset
+from src.flickr_captioning.dataset import ImageCaptioningDataset
 
 from src.config import PROCESSED_DATA_DIR, FIGURES_DIR
 

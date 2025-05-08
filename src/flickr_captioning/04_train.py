@@ -4,14 +4,14 @@ import time
 
 from datetime import datetime
 
-from src.model import UnifiedAutoregressiveDecoder
+from src.flickr_captioning.model import UnifiedAutoregressiveDecoder
 
-from src.dataset import ImageCaptioningDataset
+from src.flickr_captioning.dataset import ImageCaptioningDataset
 
 from src.config import PROCESSED_DATA_DIR, FIGURES_DIR, CHECKPOINTS_DATA_DIR
 
 # Import the plotting function
-from src.plots import plot_images_with_captions
+from src.flickr_captioning.plots import plot_images_with_captions
 
 from loguru import logger
 
@@ -87,7 +87,7 @@ SWEEP_CONFIG = {
             "values": [0.01, 0.05]
         },
         "patience": {
-            "values": [5]
+            "values": [3]
         },
         "patience_min_delta_percent": {
             "values": [0.05]
@@ -115,7 +115,6 @@ def main():
     """Main function that serves as both regular training entry point and sweep agent."""
     # Set wandb mode
     os.environ["WANDB_MODE"] = WANDB_CONFIG["mode"]
-    #os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Create the sweep - remove the name parameter
     sweep_id = wandb.sweep(

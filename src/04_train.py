@@ -42,22 +42,22 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["5000"]
+            "values": ["full"]
         },
         "clip_patch_size": {
-            "values": [16, 32]
+            "values": [32]
         },
         "batch_size": {
-            "values": [32, 64, 128]
+            "values": [128]
         },
         "learning_rate": {
-            "values": [0.001, 0.005, 0.01]
+            "values": [0.001, 0.005]
         },
         "scheduler_step": {
-            "values": [10]
+            "values": [1, 2, 5, 10]
         },
         "scheduler_gamma": {
-            "values": [0.1]
+            "values": [0.1, 0.5, 0.75]
         },
         "num_epochs": {
             "values": [10]
@@ -72,28 +72,28 @@ SWEEP_CONFIG = {
             "value": "full_sentence"
         },
         "d_model": {
-            "values": [128, 256]
+            "values": [128]
         },
         "n_layers": {
-            "values": [1, 2]
+            "values": [2]
         },
         "n_heads": {
-            "values": [1, 2]
+            "values": [2]
         },
         "d_ff": {
-            "values": [32, 64, 128]
+            "values": [32]
         },
         "dropout_prob": {
             "values": [0.05]
         },
         "length_penalty_weight": {
-            "values": [0.001, 0.005, 0.01]
+            "values": [0.0]
         },
         "patience": {
             "values": [3]
         },
         "max_captions_per_image": {
-            "values": [1, 3, 5]
+            "values": [5]
         },
         "clean_captions": {
             "values": [True, False]
@@ -115,6 +115,7 @@ def main():
     """Main function that serves as both regular training entry point and sweep agent."""
     # Set wandb mode
     os.environ["WANDB_MODE"] = WANDB_CONFIG["mode"]
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Create the sweep - remove the name parameter
     sweep_id = wandb.sweep(
@@ -324,9 +325,10 @@ def train_model():
 
         # Early stopping logic
         if val_loss < best_val_loss:
+            logger.success(f"Validation loss improved from {val_loss - best_val_loss:.4f}")
+            logger.success(f"New best: to {val_loss:.4f}  Caching model.")
             best_val_loss = val_loss
             epochs_without_improvement = 0
-            logger.success(f"Validation loss improved to {best_val_loss:.4f}. Saving model.")
             best_model_state = model.state_dict()  # Save best model weights
         else:
             epochs_without_improvement += 1
@@ -353,16 +355,27 @@ def train_model():
     wandb.finish()
 
 def save_model(run, model, epoch):
+
+    # make a new folder in CHECKPOINTS_DATA_DIR for all the sweeps
+    if not CHECKPOINTS_DATA_DIR.exists():
+        CHECKPOINTS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Create a sweep_id directory if it doesn't exist
+    sweep_id = os.getenv("WANDB_SWEEP_ID", "local_run")
+    sweep_dir = CHECKPOINTS_DATA_DIR / f"sweep_{sweep_id}"
+    if not sweep_dir.exists():
+        sweep_dir.mkdir(parents=True, exist_ok=True)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Save the model use the wandb run name for the filename
-    model_save_path = CHECKPOINTS_DATA_DIR / f"{timestamp}_{run.name}_model_{epoch}.pt"
+    model_save_path = sweep_dir / f"{timestamp}_{run.name}_model_{epoch}.pt"
     torch.save(model, model_save_path)
     
     if WANDB_CONFIG["save_model"]:
         wandb.save(model_save_path)
 
-    logger.info(f"Model saved to {model_save_path} and uploaded to wandb.")
+    logger.success(f"Model saved to {model_save_path} and uploaded to wandb.")
 
 def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl, step_function_name, length_penalty_weight, pad_token_id, scaler): # Added scaler
     model.train()

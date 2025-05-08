@@ -47,11 +47,11 @@ nohup:
 		echo "Usage: make nohup script=your_script.py"; \
 		exit 1; \
 	fi
-	nohup python3 $(script) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE)
+	nohup python $(script) > $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE)
 
 .PHONY: stop
 stop:
-	@-kill `cat $(PID_FILE)` 2>/dev/null || true
+	@pkill -f python
 	@rm -f $(PID_FILE)
 
 .PHONY: logs

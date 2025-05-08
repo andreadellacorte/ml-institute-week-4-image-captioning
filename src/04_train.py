@@ -325,8 +325,9 @@ def train_model():
 
         # Early stopping logic
         if val_loss < best_val_loss:
-            logger.success(f"Validation loss improved from {val_loss - best_val_loss:.4f}")
-            logger.success(f"New best: to {val_loss:.4f}  Caching model.")
+            if best_model_state is not None:
+                logger.success(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}")
+            logger.success(f"Validation loss new best: {val_loss:.4f}. Caching model.")
             best_val_loss = val_loss
             epochs_without_improvement = 0
             best_model_state = model.state_dict()  # Save best model weights

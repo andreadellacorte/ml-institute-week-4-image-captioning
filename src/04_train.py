@@ -87,7 +87,10 @@ SWEEP_CONFIG = {
             "values": [0.01, 0.05]
         },
         "patience": {
-            "values": [3]
+            "values": [5]
+        },
+        "patience_min_delta_percent": {
+            "values": [0.05]
         },
         "max_captions_per_image": {
             "values": [5]
@@ -323,17 +326,25 @@ def train_model():
         else:
             logger.info(f"Validation loss this epoch: {val_loss:.4f} - Prior best loss: {best_val_loss:.4f}.")
             logger.info(f"Validation loss delta: {val_loss - best_val_loss:.4f} (negative = improved).")
+
+            min_improvement = best_val_loss * config.patience_min_delta_percent
+
+            if val_loss < best_val_loss - min_improvement:
+                logger.success(f"Validation loss improved enough. Resetting patience.")
+                epochs_without_improvement = 0
+            else:
+                logger.warning(f"Validation loss did not improve enough (at least {min_improvement}).")
+                logger.warning(f"Epochs since improved: {epochs_without_improvement}/{patience}")
+                epochs_without_improvement += 1
+
             if val_loss < best_val_loss:
                 logger.success(f"Validation loss has new best. Caching model.")
                 best_val_loss = val_loss
-                epochs_without_improvement = 0
-                best_model_state = model.state_dict()  # Save best model weights
-            else:
-                epochs_without_improvement += 1
-                logger.warning(f"Validation loss did not improve. Epochs since improved: {epochs_without_improvement}/{patience}")
-                if epochs_without_improvement >= patience:
-                    logger.warning("Early stopping triggered.")
-                    break
+                best_model_state = model.state_dict()
+
+            if epochs_without_improvement >= patience:
+                logger.warning("Early stopping triggered.")
+                break
 
     # Optionally restore best model weights
     if best_model_state is not None:
@@ -466,7 +477,7 @@ def evaluate(run, model, test_dataset, epoch):
             ground_truth_captions.append(ground_truth)
     
     # Print results
-    logger.info("\nGenerated captions:")
+    logger.info("Generated captions:")
     for i in range(num_samples):
         logger.info(f"Image {i+1}:")
         logger.info(f"Generated: {' '.join(generated_captions[i])}")

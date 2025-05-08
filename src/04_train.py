@@ -377,7 +377,7 @@ def save_model(run, model, epoch, best_val_loss):
         sweep_dir.mkdir(parents=True, exist_ok=True)
 
     # Save the model use the wandb run name for the filename
-    model_save_path = sweep_dir / f"{best_val_loss}_{run.name}_model_{epoch}.pt"
+    model_save_path = sweep_dir / f"{best_val_loss:.3f}_{run.name}_{epoch}.pt"
     torch.save(model, model_save_path)
     
     if WANDB_CONFIG["save_model"]:

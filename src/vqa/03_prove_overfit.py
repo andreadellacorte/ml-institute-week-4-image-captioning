@@ -25,13 +25,13 @@ def main():
     set_seed(42)
 
     # Always load 10 samples for overfit test
-    with open(PROCESSED_DATA_DIR / "VQAv2/1_images.pkl", "rb") as f:
+    with open(PROCESSED_DATA_DIR / "VQAv2/10_images.pkl", "rb") as f:
         images = pickle.load(f)
     with open(PROCESSED_DATA_DIR / "VQAv2/1_index.pkl", "rb") as f:
         index = pickle.load(f)
 
     # Select 1 image for trivial overfit
-    index = index[:1]
+    index = index[:10]
 
     # Use same data for train and test
     train_index = index
@@ -47,7 +47,7 @@ def main():
         n_layers=2,
         n_heads=8,
         d_ff=256,
-        dropout_prob=0.05,  # Explicitly set dropout to 0
+        dropout_prob=0.05,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,10 +55,10 @@ def main():
 
     # Use VQADataset for train and validation
     dataset = VQADataset(
+        images,
         train_index,
-        index,
         model,
-        clean_text=True)
+        clean_questions=True)
 
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=True)
 
@@ -67,7 +67,7 @@ def main():
         images,
         test_index,
         model,
-        clean_text=True)
+        clean_questions=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)  # Switched to AdamW optimizer
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)  # Decrease LR every 10 epochs

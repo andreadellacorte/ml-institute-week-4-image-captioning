@@ -8,17 +8,17 @@ from PIL import Image
 import string
 
 class VQADataset(Dataset):
-    def __init__(self, images, index, model, clean_text):
-        self.images = images # This is the original images dict with bytes and caption_ids
+    def __init__(self, images, index, model, clean_questions):
+        self.images = images
         self.index = index
-        self.clean_captions = clean_text
+        self.clean_questions = clean_questions
         self.max_len = model.max_len
 
         self.tokenizer = model.tokenizer
         self.processor = model.processor
     
     def __len__(self):
-        return len(self.captions)
+        return len(self.index)
     
     def clean_text(self, text):
         # keep only alphanum
@@ -34,7 +34,7 @@ class VQADataset(Dataset):
         _pixel_values = self.processor(images=image_pil, return_tensors="pt")["pixel_values"][0]  # (C, H, W)
         
         question = item["question"]
-        if self.clean_text:  # <--- Only clean if enabled
+        if self.clean_questions:  # <--- Only clean if enabled
             question = self.clean_text(question)
 
         # Prepare input_ids: [BOS, content_tokens, PAD...]
@@ -53,22 +53,24 @@ class VQADataset(Dataset):
 
         assert len(answer.split()) == 1, f"Answer must be a single word, got: {answer}"
 
-        # Prepare label_ids: [token1, ..., tokenN, EOS, PAD...]
-        _label_ids = torch.full((self.max_len,), self.tokenizer.pad_token_id, dtype=torch.long)
-        effective_len = torch.sum(_attention_mask).item()
+        # Prepare input_ids: [BOS, content_tokens, PAD...]
+        output_tokenization = self.tokenizer(
+            answer,
+            padding="max_length",
+            max_length=self.max_len,
+            truncation=True,
+            return_tensors="pt"
+        )
 
-        if effective_len > 1: # if there's more than just BOS
-            len_to_copy = effective_len - 1
-            _label_ids[:len_to_copy] = _input_ids[1:effective_len]
-            if _input_ids[effective_len-1] == self.tokenizer.eos_token_id:
-                 _label_ids[len_to_copy-1] = _input_ids[effective_len-1] # This should be EOS
-            elif len_to_copy < self.max_len :
-                 _label_ids[len_to_copy] = self.tokenizer.eos_token_id
+        _label_ids = output_tokenization.input_ids
+
+        # Remove the first token (BOS) and add an extra PAD token at the end
+        _label_ids = torch.cat([_label_ids[0][1:], torch.tensor([self.tokenizer.pad_token_id])])
 
         return {
             "image_tensor": _pixel_values, # Only return image bytes for the model
             "image_bytes": _image_bytes, # Original image bytes for visualisation
             "input_ids": _input_ids,
             "attention_mask": _attention_mask, # Original attention mask for input_ids
-            "label_id": _label_ids
+            "label_ids": _label_ids
         }

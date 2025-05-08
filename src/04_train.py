@@ -44,21 +44,26 @@ SWEEP_CONFIG = {
         "dataset_size": {
             "values": ["5000"]
         },
+        "clip_patch_size": {
+            "values": [16, 32]
+        },
         "batch_size": {
-<<<<<<< Updated upstream
             "values": [32, 64, 128]
-=======
-            "values": [128, 256, 512]
->>>>>>> Stashed changes
         },
         "learning_rate": {
             "values": [0.001, 0.005, 0.01]
         },
+        "scheduler_step": {
+            "values": [10]
+        },
+        "scheduler_gamma": {
+            "values": [0.1]
+        },
         "num_epochs": {
-            "values": [10]  # Reduced epochs for faster debugging turn-around
+            "values": [10]
         },
         "optimizer": {
-            "value": "adam"
+            "values": ["adamw"]
         },
         "max_len": {
             "value": 20
@@ -86,6 +91,9 @@ SWEEP_CONFIG = {
         },
         "patience": {
             "values": [3]
+        },
+        "max_captions_per_image": {
+            "values": [1, 3, 5]
         },
         "clean_captions": {
             "values": [True, False]
@@ -182,7 +190,7 @@ def train_model():
     logger.info(f"Test images: {len(test_images)}")
 
     model = UnifiedAutoregressiveDecoder(
-        clip_model_name="openai/clip-vit-base-patch32",
+        clip_model_name=f"openai/clip-vit-base-patch{config.clip_patch_size}",
         max_len=config.max_len,
         d_model=config.d_model,
         n_layers=config.n_layers,
@@ -208,12 +216,14 @@ def train_model():
         train_images,
         captions,
         model,
+        max_captions_per_image=config.max_captions_per_image,
         clean_captions=config.clean_captions)
 
     test_dataset = ImageCaptioningDataset(
         test_images,
         captions,
         model,
+        max_captions_per_image=config.max_captions_per_image,
         clean_captions=config.clean_captions)
 
     logger.info("Dataset loaded")
@@ -250,7 +260,9 @@ def train_model():
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-        
+
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma)
+
     # Use ignore_index for PAD tokens
     criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
     
@@ -286,8 +298,9 @@ def train_model():
         )
         epoch_end_time = datetime.now()
         epoch_duration = (epoch_end_time - epoch_start_time).total_seconds()
-        
-        logger.success(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {loss:.4f}, Duration: {epoch_duration:.2f}s")
+
+        scheduler.step()  # Step the scheduler after each epoch
+        logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Loss: {loss:.4f}, LR: {scheduler.get_last_lr()[0]}, Duration: {epoch_duration:.2f}s")
         
         # Log metrics to wandb
         wandb.log({

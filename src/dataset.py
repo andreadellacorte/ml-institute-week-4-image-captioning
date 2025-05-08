@@ -9,7 +9,7 @@ import string
 from tqdm import tqdm
 
 class ImageCaptioningDataset(Dataset):
-    def __init__(self, images, captions, model, clean_captions=False):
+    def __init__(self, images, captions, model, max_captions_per_image, clean_captions):
         self.images = images # This is the original images dict with bytes and caption_ids
         self.captions = captions
         self.clean_captions = clean_captions
@@ -18,13 +18,17 @@ class ImageCaptioningDataset(Dataset):
         self.tokenizer = model.tokenizer
         self.processor = model.processor
 
-        # Prepare dataset with a progress bar
+        # Prepare dataset with a progress bar, allowing configurable number of captions per image
         self.data = []
+
+        assert max_captions_per_image > 0, "max_captions_per_image must be greater than 0"
+        assert max_captions_per_image <= 5, "max_captions_per_image must be less than or equal to 5"
+        
         for img_id, img_data in tqdm(self.images.items(), desc="Preparing dataset"):
-            for caption_id in img_data["caption_ids"]:
+            for caption_id in img_data["caption_ids"][:max_captions_per_image]:
                 self.data.append({
-                    "img_id": img_id,
-                    "caption_id": caption_id
+                "img_id": img_id,
+                "caption_id": caption_id
                 })
     
     def __len__(self):

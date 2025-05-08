@@ -99,7 +99,6 @@ class UnifiedAutoregressiveDecoder(nn.Module):
                 if isinstance(m, nn.Dropout):
                     m.p = 0.0
 
-
         clip_params = \
             sum(p.numel() for p in self.vision_model.parameters() if p.requires_grad is False) \
             + sum(p.numel() for p in self.text_model.parameters() if p.requires_grad is False)

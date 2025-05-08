@@ -48,7 +48,7 @@ def main():
         n_layers=2,
         n_heads=8,
         d_ff=256,
-        dropout_prob=0.1,  # Explicitly set dropout to 0
+        dropout_prob=0.05,  # Explicitly set dropout to 0
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,17 +57,22 @@ def main():
     dataset = ImageCaptioningDataset(
         train_images,
         captions,
-        model)
+        model,
+        max_captions_per_image=1,
+        clean_captions=True)
 
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=2, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=True)
 
     # Use same for validation
     val_dataset = ImageCaptioningDataset(
         test_images,
         captions,
-        model)
+        model,
+        max_captions_per_image=1,
+        clean_captions=True)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # Reduced LR from 1e-2 to 1e-4
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)  # Switched to AdamW optimizer
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)  # Decrease LR every 10 epochs
     criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
 
     # Print detailed debug info for the first sample
@@ -82,7 +87,8 @@ def main():
     # Overfit loop
     for epoch in range(100):  # Increased from 20 to 100
         loss = train_one_epoch(model, dataloader, optimizer, criterion, full_sentence_step)
-        logger.info(f"[Overfit] Epoch {epoch+1}/100, Loss: {loss:.4f}")
+        scheduler.step()  # Step the scheduler after each epoch
+        logger.info(f"[Overfit] Epoch {epoch+1}/100, Loss: {loss:.4f}, LR: {scheduler.get_last_lr()[0]}")
         # Print generated captions every epoch
         model.eval()
         with torch.no_grad():
@@ -123,7 +129,7 @@ def full_sentence_step(model, images, input_ids, label_ids, attention_mask, opti
     outputs = model(images, input_ids, attention_mask=attention_mask)
     loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
 
-    length_penalty_weight = 0.0
+    length_penalty_weight = 0.1
 
     # Apply length penalty
     length_penalty = length_penalty_weight * (label_ids != model.tokenizer.pad_token_id).sum(dim=1).float()

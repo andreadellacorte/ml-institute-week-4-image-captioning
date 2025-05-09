@@ -1,4 +1,6 @@
-from src.model import UnifiedAutoregressiveDecoder
+import numpy as np
+
+from src.model import UnifiedAutoregressiveDecoder, ImageToWordClassifier
 
 from src.vqa.dataset import VQADataset
 
@@ -50,8 +52,12 @@ def main():
         dropout_prob=0.05,
     )
 
+    # Wrap the UnifiedAutoregressiveDecoder with ImageToWordClassifier
+    classifier = ImageToWordClassifier(model)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    model.to(device)  # Move the base model to device as well
+    classifier.to(device)
 
     # Use VQADataset for train and validation
     dataset = VQADataset(
@@ -69,42 +75,35 @@ def main():
         model,
         clean_questions=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)  # Switched to AdamW optimizer
+    optimizer = torch.optim.AdamW(classifier.parameters(), lr=1e-2)  # Switched to AdamW optimizer
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)  # Decrease LR every 10 epochs
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=model.tokenizer.pad_token_id)
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=-100)
 
     # Print detailed debug info for the first sample
     sample = dataset[0]
 
     # Get caption_id from the dataset's internal data list
-    logger.info(f"Label token ids: {sample['label_ids']}")
-    logger.info(f"Decoded text: {model.decode_tokens(sample['label_ids'])}")
+    logger.info(f"Label token id: {sample['label_id']}")
+    logger.info(f"Decoded text: {model.decode_tokens(np.array([sample['label_id']]))}")
     logger.info(f"Input token ids: {sample['input_ids']}")
     logger.info(f"Input text: {model.decode_tokens(sample['input_ids'])}")
 
     # Overfit loop
     for epoch in range(100):  # Increased from 20 to 100
-        loss = train_one_epoch(model, dataloader, optimizer, criterion, full_sentence_step)
+        loss = train_one_epoch(classifier, dataloader, optimizer, criterion, full_sentence_step)
         scheduler.step()  # Step the scheduler after each epoch
         logger.info(f"[Overfit] Epoch {epoch+1}/100, Loss: {loss:.4f}, LR: {scheduler.get_last_lr()[0]}")
-        # Print generated captions every epoch
-        model.eval()
+        # Print generated answers every epoch
+        classifier.eval()
         with torch.no_grad():
             sample = val_dataset[0]
             image = sample["image_tensor"].unsqueeze(0).to(device)
-            label_ids = sample["label_ids"].unsqueeze(0).to(device)
-            # Force generation to match label length (excluding padding)
-            label_len = (label_ids != model.tokenizer.pad_token_id).sum().item()
-            generated = model.generate_caption(image, max_new_tokens=label_len)
-            if isinstance(generated, list):
-                generated_text = generated[0]
-            else:
-                generated_text = generated
-            generated_ids = model.tokenizer(generated_text, return_tensors="pt").input_ids[0]
-            logger.info(f"Sample 1:\n  Generated: {generated_text}\n  Ground truth: {model.decode_tokens(label_ids.squeeze(0))}")
-            logger.info(f"Generated token ids: {generated_ids}")
-            logger.info(f"Ground truth token ids: {label_ids.squeeze(0)}")
-        model.train()
+            label_id = sample["label_id"]  # This is already a scalar
+            # Decode the single token ID
+            ground_truth = model.decode_tokens(np.array([label_id]))
+            generated_answer = classifier.predict_word(image)[0]
+            logger.info(f"Sample 1:\n  Generated: {generated_answer}\n  Ground truth: {ground_truth}")
+        classifier.train()
 
 def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     model.train()
@@ -113,19 +112,19 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function):
     device = next(model.parameters()).device
     for batch in progress_bar:
         images = batch["image_tensor"].to(device)
-        input_ids = batch["input_ids"].to(device)
-        label_ids = batch["label_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+        # The label is already a single token ID
+        target = batch["label_id"].to(device)
+        
         # Track total loss
-        loss = step_function(model, images, input_ids, label_ids, attention_mask, optimizer, criterion)
+        loss = step_function(model, images, target, optimizer, criterion)
         total_loss += loss.item()
         progress_bar.set_postfix(loss=f"{loss.item():.4f}")
     return total_loss / len(dataloader)
 
-def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion):
+def full_sentence_step(model, images, target, optimizer, criterion):
     optimizer.zero_grad()
-    outputs = model(images, input_ids, attention_mask=attention_mask)
-    loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+    outputs = model(images)  # Classifier forward pass
+    loss = criterion(outputs, target)
     loss.backward()
     optimizer.step()
     return loss

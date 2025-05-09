@@ -333,8 +333,8 @@ def train_model():
                 epochs_without_improvement = 0
             else:
                 logger.warning(f"Validation loss did not improve enough (at least {min_improvement}).")
-                logger.warning(f"Epochs since improved: {epochs_without_improvement}/{patience}")
                 epochs_without_improvement += 1
+                logger.warning(f"Epochs since improved: {epochs_without_improvement}/{patience}")
 
             if val_loss < best_val_loss:
                 logger.success(f"Validation loss has new best. Caching model.")

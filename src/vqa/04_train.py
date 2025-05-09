@@ -4,7 +4,7 @@ import time
 
 from datetime import datetime
 
-from src.model import UnifiedAutoregressiveDecoder, ImageToWordClassifier
+from src.model import StandaloneVQAClassifier
 
 from src.vqa.dataset import VQADataset
 
@@ -39,61 +39,49 @@ SWEEP_CONFIG = {
     },
     "parameters": {
         "dataset_size": {
-            "values": ["10000"]
+            "values": ["100"]
         },
         "clip_patch_size": {
-            "values": [16, 32]
+            "values": [32]
         },
         "batch_size": {
-            "values": [16, 32, 64, 128]
+            "values": [256]
         },
         "learning_rate": {
-            "values": [0.001, 0.005]
+            "values": [0.0001, 0.001, 0.01]
         },
         "scheduler_step": {
-            "values": [3, 5]
-        },
-        "scheduler_gamma": {
-            "values": [0.1]
-        },
-        "num_epochs": {
             "values": [20]
         },
+        "scheduler_gamma": {
+            "values": [0.1, 0.5]
+        },
+        "num_epochs": {
+            "values": [10]
+        },
         "optimizer": {
-            "values": ["adamw"]
+            "values": ["adam"]
         },
         "label_smoothing": {
-            "values": [0.02, 0.1, 0.5]
+            "values": [0.0]
         },
-        "max_len": {
-            "value": 20
+        "classifier_vocab_size": {
+            "value": 1000
         },
         "d_model": {
-            "values": [64, 128]
-        },
-        "n_layers": {
-            "values": [4, 6, 8]
-        },
-        "n_heads": {
-            "values": [2, 4]
-        },
-        "d_ff": {
-            "values": [32, 64]
+            "values": [512]
         },
         "dropout_prob": {
-            "values": [0.01, 0.05]
+            "values": [0.01]
         },
         "patience": {
-            "values": [3]
-        },
-        "patience_min_delta_percent": {
-            "values": [0.05]
-        },
-        "max_captions_per_image": {
             "values": [5]
         },
-        "clean_captions": {
-            "values": [False]
+        "patience_min_delta_percent": {
+            "values": [0.01]
+        },
+        "clean_questions": {
+            "values": [True]
         },
     }
 }
@@ -146,7 +134,7 @@ def main():
         logger.warning(f"Could not retrieve sweep URL: {e}")
 
     # Start the sweep agent
-    wandb.agent(sweep_id, train_model)
+    wandb.agent(sweep_id, train_model, count=None)
 
 def train_model():
     """Train the model with the given configuration."""
@@ -180,18 +168,42 @@ def train_model():
     logger.info(f"Train images: {len(train_index)}")
     logger.info(f"Test images: {len(test_index)}")
 
-    # Build base captioning model and wrap with classifier
-    base_model = UnifiedAutoregressiveDecoder(
+    # Create temporary model just to provide processor and tokenizer to datasets
+    temp_model = StandaloneVQAClassifier(
         clip_model_name=f"openai/clip-vit-base-patch{config.clip_patch_size}",
-        max_len=config.max_len,
+        num_classes=config.classifier_vocab_size,  # Temporary value
         d_model=config.d_model,
-        n_layers=config.n_layers,
-        n_heads=config.n_heads,
-        d_ff=config.d_ff,
-        dropout_prob=config.dropout_prob,  # Pass dropout_prob from config
+        dropout_prob=config.dropout_prob
     )
-    model = ImageToWordClassifier(base_model)
-
+    
+    # Create datasets first to get the number of answer classes
+    train_dataset = VQADataset(
+        images,
+        train_index,
+        temp_model,
+        clean_questions=config.clean_questions)
+    
+    test_dataset = VQADataset(
+        images,
+        test_index,
+        temp_model,
+        clean_questions=config.clean_questions)
+    
+    # Now create the real model with the correct number of classes
+    model = StandaloneVQAClassifier(
+        clip_model_name=f"openai/clip-vit-base-patch{config.clip_patch_size}",
+        num_classes=train_dataset.num_classes,
+        d_model=config.d_model,
+        dropout_prob=config.dropout_prob
+    )
+    
+    # Log statistics about the answer space
+    logger.info(f"Answer classes: {train_dataset.num_classes} (including unknown class)")
+    
+    # Sample a few examples to see what we're working with
+    sample_answers = list(train_dataset.answer_to_idx.keys())[:10]
+    logger.info(f"Sample answers: {sample_answers}")
+    
     # log the number of parameters to wandb
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Number of trainable parameters: {num_params / 1e6:.2f}M")
@@ -204,18 +216,6 @@ def train_model():
     logger.info(f"Using device: {device}")
     if device.type == 'cuda':
         logger.info(f"Initial GPU Memory: Allocated = {torch.cuda.memory_allocated(device) / 1024**2:.2f} MB, Reserved = {torch.cuda.memory_reserved(device) / 1024**2:.2f} MB")
-
-    train_dataset = VQADataset(
-        images,
-        train_index,
-        model,
-        clean_questions=config.clean_captions)
-
-    test_dataset = VQADataset(
-        images,
-        test_index,
-        model,
-        clean_questions=config.clean_captions)
 
     logger.info("Dataset loaded")
 
@@ -254,9 +254,8 @@ def train_model():
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma)
 
-    # Use model.tokenizer for ignore_index
+    # Use appropriate ignore_index for CrossEntropyLoss
     criterion = torch.nn.CrossEntropyLoss(
-        ignore_index=model.caption_model.tokenizer.pad_token_id,
         label_smoothing=config.label_smoothing
     )
     
@@ -299,7 +298,7 @@ def train_model():
 
         val_loss = validate(
             model, 
-            val_dataloader, 
+            train_dataloader, 
             criterion
         )
 
@@ -323,8 +322,8 @@ def train_model():
                 epochs_without_improvement = 0
             else:
                 logger.warning(f"Validation loss did not improve enough (at least {min_improvement}).")
-                logger.warning(f"Epochs since improved: {epochs_without_improvement}/{patience}")
                 epochs_without_improvement += 1
+                logger.warning(f"Epochs since improved: {epochs_without_improvement}/{patience}")
 
             if val_loss < best_val_loss:
                 logger.success(f"Validation loss has new best. Caching model.")
@@ -386,6 +385,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
     for batch_idx, batch in enumerate(progress_bar):
         batch_start_time = time.time()
         image_tensor = batch["image_tensor"].to(device)
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
         label_id = batch["label_id"].to(device)
         data_to_device_time = time.time() - batch_start_time
         
@@ -397,10 +398,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
         
         # Autocast for the step function if on CUDA
         with autocast(device_type=device.type, enabled=use_amp):
-                # single_word_step takes label_id and returns a tensor and detailed timings
-                # AMP is handled by the autocast context here, scaler is passed for backward/step
+                # Modified step function to include input_ids and attention_mask
                 loss_tensor, returned_timings = step_function_impl(
-                    model, image_tensor, label_id, optimizer, criterion, scaler
+                    model, image_tensor, input_ids, attention_mask, label_id, optimizer, criterion, scaler
                 )
                 loss_val = loss_tensor.item() # loss_tensor is already after potential scaling
                 timings = returned_timings # Update with actual timings from the step function
@@ -415,13 +415,13 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
 
     return total_loss / len(dataloader)
 
-def single_word_step(model, images, label_id, optimizer, criterion, scaler):
+def single_word_step(model, images, input_ids, attention_mask, label_id, optimizer, criterion, scaler):
     step_start_time = time.time()
     timings = {}
 
     optimizer.zero_grad()
     forward_start_time = time.time()
-    logits = model(images)  # (B, vocab_size)
+    logits = model(images, input_ids, attention_mask)  # Pass text inputs to the model
     timings['forward_time'] = time.time() - forward_start_time
     loss_start_time = time.time()
     loss = criterion(logits, label_id)
@@ -455,23 +455,31 @@ def evaluate(run, model, test_dataset, epoch):
     with torch.no_grad():
         for idx in sample_indices:
             sample = test_dataset[idx]
-            image_tensor = sample["image_tensor"].unsqueeze(0).to(device) # Add batch dimension
-            label_ids = sample["label_ids"].unsqueeze(0).to(device)
+            image_tensor = sample["image_tensor"].unsqueeze(0).to(device)  # Add batch dimension
+            input_ids = sample["input_ids"].unsqueeze(0).to(device)
+            attention_mask = sample["attention_mask"].unsqueeze(0).to(device)
+            
             # Use the original image bytes for visualization
             original_images.append(sample["image_bytes"])
-            label_len = (label_ids != model.tokenizer.pad_token_id).sum().item()
-            question = model.decode_tokens(sample["input_ids"].squeeze(0).cpu().numpy())
-            generated_caption = model.generate_caption(image_tensor, max_new_tokens=label_len)[0].split()
-            ground_truth = model.decode_tokens(label_ids.squeeze(0).cpu().numpy())
+            
+            # Get the question text from the input_ids
+            question = model.tokenizer.decode(sample["input_ids"], skip_special_tokens=True)
             questions.append(question)
-            generated_answers.append(generated_caption)
+            
+            # Generate answer using the classifier and convert back to text
+            generated_answer = model.predict_answer(image_tensor, input_ids, attention_mask, test_dataset.idx_to_answer)[0]
+            generated_answers.append(generated_answer)
+            
+            # Get ground truth answer directly from the sample
+            ground_truth = sample["answer_text"]
             ground_truth_answers.append(ground_truth)
     
     # Print results
-    logger.info("Generated captions:")
     for i in range(num_samples):
+        logger.info("---")
         logger.info(f"Image {i+1}:")
-        logger.info(f"Generated: {' '.join(generated_answers[i])}")
+        logger.info(f"Question: {questions[i]}")
+        logger.info(f"Generated: {generated_answers[i]}")
         logger.info(f"Ground truth: {ground_truth_answers[i]}")
         logger.info("---")
 
@@ -483,7 +491,7 @@ def evaluate(run, model, test_dataset, epoch):
         caption_table = wandb.Table(columns=["Image", "Question", "Generated Answer", "Ground Truth"])
         for img, ques, gen, gt in zip(original_images, questions, generated_answers, ground_truth_answers):
             pil_img = Image.open(io.BytesIO(img)) if isinstance(img, bytes) else img
-            caption_table.add_data(wandb.Image(pil_img), " ".join(ques), " ".join(gen), gt)
+            caption_table.add_data(wandb.Image(pil_img), ques, gen, gt)
         
         # Log the table
         wandb.log({"caption_examples": caption_table})
@@ -493,18 +501,32 @@ def validate(model, val_loader, criterion):
     device = next(model.parameters()).device
     use_amp = (device.type == 'cuda') # Determine if AMP should be used for validation
     total_loss = 0
+    correct = 0
+    total = 0
+    
     with torch.no_grad():
         for batch in val_loader:
             image_tensor = batch["image_tensor"].to(device)
             input_ids = batch["input_ids"].to(device)
-            label_ids = batch["label_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            label_id = batch["label_id"].to(device)
+            
             with autocast(device_type=device.type, enabled=use_amp):
-                outputs = model(image_tensor, input_ids, attention_mask=attention_mask)
-                loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+                outputs = model(image_tensor, input_ids, attention_mask)  # Pass all inputs
+                loss = criterion(outputs, label_id)
+            
+            # Calculate accuracy
+            pred = outputs.argmax(dim=1)
+            correct += (pred == label_id).sum().item()
+            total += label_id.size(0)
             total_loss += loss.item()
+            
     avg_loss = total_loss / len(val_loader)
-    logger.info(f"Validation loss: {avg_loss:.4f}")
+    accuracy = correct / total
+    
+    logger.info(f"Validation loss: {avg_loss:.4f}, Accuracy: {accuracy:.2%}")
+    wandb.log({"validation_accuracy": accuracy})
+    
     return avg_loss
 
 if __name__ == "__main__":

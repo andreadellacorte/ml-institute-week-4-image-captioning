@@ -205,3 +205,25 @@ class UnifiedAutoregressiveDecoder(nn.Module):
         else:
             # Batch
             return self.tokenizer.batch_decode(tokens, skip_special_tokens=True)
+
+class ImageToWordClassifier(nn.Module):
+    def __init__(self, caption_model: UnifiedAutoregressiveDecoder):
+        super().__init__()
+        self.caption_model = caption_model  # Use the pretrained captioning model
+
+    def forward(self, images):
+        # images: torch.Tensor of shape (B, C, H, W)
+        device = next(self.caption_model.parameters()).device
+        # Start with BOS token
+        start_token_id = self.caption_model.tokenizer.bos_token_id
+        tokens = torch.full((images.size(0), 1), start_token_id, dtype=torch.long, device=device)
+        # Forward pass: get logits for the first word
+        logits = self.caption_model.forward(images, tokens)  # (B, 1, vocab_size)
+        logits = logits[:, -1, :]  # (B, vocab_size)
+        return logits
+
+    def predict_word(self, images):
+        logits = self.forward(images)
+        pred_ids = logits.argmax(dim=-1)  # (B,)
+        words = [self.caption_model.tokenizer.decode([idx], skip_special_tokens=True) for idx in pred_ids]
+        return words

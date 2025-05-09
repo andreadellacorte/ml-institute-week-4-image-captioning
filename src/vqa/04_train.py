@@ -4,7 +4,7 @@ import time
 
 from datetime import datetime
 
-from src.model import UnifiedAutoregressiveDecoder
+from src.model import UnifiedAutoregressiveDecoder, ImageToWordClassifier
 
 from src.vqa.dataset import VQADataset
 
@@ -180,7 +180,8 @@ def train_model():
     logger.info(f"Train images: {len(train_index)}")
     logger.info(f"Test images: {len(test_index)}")
 
-    model = UnifiedAutoregressiveDecoder(
+    # Build base captioning model and wrap with classifier
+    base_model = UnifiedAutoregressiveDecoder(
         clip_model_name=f"openai/clip-vit-base-patch{config.clip_patch_size}",
         max_len=config.max_len,
         d_model=config.d_model,
@@ -189,6 +190,7 @@ def train_model():
         d_ff=config.d_ff,
         dropout_prob=config.dropout_prob,  # Pass dropout_prob from config
     )
+    model = ImageToWordClassifier(base_model)
 
     # log the number of parameters to wandb
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -252,16 +254,16 @@ def train_model():
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma)
 
-    # Use label smoothing cross-entropy as criterion
+    # Use model.tokenizer for ignore_index
     criterion = torch.nn.CrossEntropyLoss(
-        ignore_index=model.tokenizer.pad_token_id,
+        ignore_index=model.caption_model.tokenizer.pad_token_id,
         label_smoothing=config.label_smoothing
     )
     
     # Initialize GradScaler for AMP if on CUDA
     scaler = GradScaler(enabled=(device.type == 'cuda'))
 
-    step_function_impl = full_sentence_step
+    step_function_impl = single_word_step
     
     best_val_loss = float('inf')
     patience = config.patience  # Number of epochs to wait for improvement
@@ -384,9 +386,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
     for batch_idx, batch in enumerate(progress_bar):
         batch_start_time = time.time()
         image_tensor = batch["image_tensor"].to(device)
-        input_ids = batch["input_ids"].to(device)
-        label_ids = batch["label_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+        label_id = batch["label_id"].to(device)
         data_to_device_time = time.time() - batch_start_time
         
         loss_val = 0.0
@@ -397,10 +397,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
         
         # Autocast for the step function if on CUDA
         with autocast(device_type=device.type, enabled=use_amp):
-                # full_sentence_step takes attention_mask and returns a tensor and detailed timings
+                # single_word_step takes label_id and returns a tensor and detailed timings
                 # AMP is handled by the autocast context here, scaler is passed for backward/step
                 loss_tensor, returned_timings = step_function_impl(
-                    model, image_tensor, input_ids, label_ids, attention_mask, optimizer, criterion, scaler
+                    model, image_tensor, label_id, optimizer, criterion, scaler
                 )
                 loss_val = loss_tensor.item() # loss_tensor is already after potential scaling
                 timings = returned_timings # Update with actual timings from the step function
@@ -415,16 +415,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, step_function_impl,
 
     return total_loss / len(dataloader)
 
-def full_sentence_step(model, images, input_ids, label_ids, attention_mask, optimizer, criterion, scaler):
+def single_word_step(model, images, label_id, optimizer, criterion, scaler):
     step_start_time = time.time()
     timings = {}
 
     optimizer.zero_grad()
     forward_start_time = time.time()
-    outputs = model(images, input_ids, attention_mask=attention_mask)
+    logits = model(images)  # (B, vocab_size)
     timings['forward_time'] = time.time() - forward_start_time
     loss_start_time = time.time()
-    loss = criterion(outputs.view(-1, outputs.size(-1)), label_ids.view(-1))
+    loss = criterion(logits, label_id)
     timings['loss_time'] = time.time() - loss_start_time
     backward_start_time = time.time()
     scaler.scale(loss).backward()

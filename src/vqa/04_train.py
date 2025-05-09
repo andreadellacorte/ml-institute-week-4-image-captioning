@@ -30,63 +30,95 @@ WANDB_CONFIG = {
     "save_model": False, # Set to True if you want to save the model
 }
 
-# Sweep Configuration for Debugging Slowdown
+# Comprehensive Sweep Configuration for optimal results
 SWEEP_CONFIG = {
-    "method": "bayes",
+    "method": "bayes",  # Bayesian optimization for more efficient hyperparameter search
     "metric": {
-        "name": "validation_loss",
-        "goal": "minimize"
+        "name": "validation_accuracy",  # Optimize for accuracy instead of loss
+        "goal": "maximize"
     },
     "parameters": {
+        # Data parameters
         "dataset_size": {
-            "values": ["100"]
+            "values": ["30000"]  # Keep dataset size fixed for consistent comparison
         },
         "clip_patch_size": {
-            "values": [32]
-        },
-        "batch_size": {
-            "values": [256]
-        },
-        "learning_rate": {
-            "values": [0.0001, 0.001, 0.01]
-        },
-        "scheduler_step": {
-            "values": [20]
-        },
-        "scheduler_gamma": {
-            "values": [0.1, 0.5]
-        },
-        "num_epochs": {
-            "values": [10]
-        },
-        "optimizer": {
-            "values": ["adam"]
-        },
-        "label_smoothing": {
-            "values": [0.0]
+            "values": [32]  # Try both patch sizes from CLIP
         },
         "classifier_vocab_size": {
-            "value": 1000
+            "values": [1000]  # Different vocabulary sizes for answers
         },
-        "d_model": {
-            "values": [512]
+
+        # Training parameters
+        "batch_size": {
+            "values": [32, 64, 128]  # Try different batch sizes
+        },
+        "learning_rate": {
+            "distribution": "log_uniform_values",
+            "min": 1e-5,
+            "max": 1e-3
+        },
+        "optimizer": {
+            "values": ["adam", "adamw"]  # Compare optimizers
+        },
+        "weight_decay": {
+            "values": [0.0, 0.01, 0.001]  # Try different L2 regularization strengths
+        },
+        
+        # Learning rate schedule
+        "scheduler_type": {
+            "values": ["step", "cosine", "linear_warmup"]  # Different scheduler types
+        },
+        "scheduler_step": {
+            "values": [5, 10, 20]  # For step scheduler
+        },
+        "scheduler_gamma": {
+            "values": [0.1, 0.5, 0.7]  # For step scheduler
+        },
+        "warmup_steps": {
+            "values": [0, 100, 500]  # For warmup schedulers
+        },
+        
+        # Training duration
+        "num_epochs": {
+            "values": [15]  # Try training longer
+        },
+        
+        # Regularization
+        "label_smoothing": {
+            "values": [0.0, 0.05, 0.1]  # Try different label smoothing values
         },
         "dropout_prob": {
-            "values": [0.01]
+            "values": [0.1, 0.2, 0.3]  # Try higher dropout for better generalization
         },
+        
+        # Model architecture
+        "d_model": {
+            "values": [256, 512, 768]  # Try different model dimensions
+        },
+        "n_heads": {
+            "values": [4, 8, 12]  # Different attention head counts
+        },
+        "n_fusion_layers": {
+            "values": [1, 2, 3]  # Try different numbers of fusion layers
+        },
+        
+        # Early stopping
         "patience": {
-            "values": [5]
+            "values": [5, 10]
         },
         "patience_min_delta_percent": {
-            "values": [0.01]
+            "values": [0.005, 0.01]
         },
+        
+        # Other
         "clean_questions": {
-            "values": [True]
+            "values": [True]  # Keep this fixed for now
         },
     }
 }
 
-sweep_config = SWEEP_CONFIG  # Use the debug config
+sweep_config = SWEEP_CONFIG  # Use the comprehensive config
 
 def set_seed(seed):
     """Set the random seed for reproducibility."""
@@ -298,7 +330,7 @@ def train_model():
 
         val_loss = validate(
             model, 
-            train_dataloader, 
+            val_dataloader, 
             criterion
         )
 

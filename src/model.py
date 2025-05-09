@@ -260,8 +260,72 @@ class VQAClassifier(nn.Module):
         # For compatibility with existing code
         return self.caption_model.tokenizer
 
+class MultimodalAttention(nn.Module):
+    """Multi-head cross-attention between image and text features"""
+    def __init__(self, d_model, n_heads=8, dropout_prob=0.1):
+        super().__init__()
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        
+        # Projections for queries, keys, values
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        
+        self.dropout = nn.Dropout(dropout_prob)
+        self.scale = self.head_dim ** -0.5
+    
+    def forward(self, query, key_value, attention_mask=None):
+        """
+        query: [batch_size, query_len, d_model]
+        key_value: [batch_size, kv_len, d_model]
+        attention_mask: [batch_size, kv_len] or None
+        """
+        batch_size = query.shape[0]
+        query_len = query.shape[1]
+        kv_len = key_value.shape[1]
+        
+        # Project and reshape for multi-head attention
+        q = self.q_proj(query).view(batch_size, query_len, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(key_value).view(batch_size, kv_len, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(key_value).view(batch_size, kv_len, self.n_heads, self.head_dim).transpose(1, 2)
+        
+        # Compute attention scores
+        # q: [batch_size, n_heads, query_len, head_dim]
+        # k: [batch_size, n_heads, kv_len, head_dim]
+        # scores: [batch_size, n_heads, query_len, kv_len]
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        
+        # Apply attention mask if provided
+        if attention_mask is not None:
+            # Reshape mask for broadcasting: [batch_size, 1, 1, kv_len]
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(1)
+            scores = scores.masked_fill(attention_mask == 0, float('-inf'))
+        
+        # Apply softmax and dropout
+        attn_weights = torch.nn.functional.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        # Apply attention weights to values
+        # attn_weights: [batch_size, n_heads, query_len, kv_len]
+        # v: [batch_size, n_heads, kv_len, head_dim]
+        # context: [batch_size, n_heads, query_len, head_dim]
+        context = torch.matmul(attn_weights, v)
+        
+        # Reshape back to original dimensions
+        # context: [batch_size, query_len, d_model]
+        context = context.transpose(1, 2).contiguous().view(batch_size, query_len, self.d_model)
+        
+        # Final projection
+        output = self.out_proj(context)
+        return output
+
 class StandaloneVQAClassifier(nn.Module):
-    def __init__(self, clip_model_name="openai/clip-vit-base-patch32", num_classes=3000, d_model=512, dropout_prob=0.1):
+    def __init__(self, clip_model_name="openai/clip-vit-base-patch32", num_classes=3000, d_model=512, n_heads=8, n_fusion_layers=2, dropout_prob=0.1):
         super().__init__()
         # Load CLIP vision and text models directly
         self.vision_model = CLIPVisionModel.from_pretrained(clip_model_name)
@@ -282,7 +346,7 @@ class StandaloneVQAClassifier(nn.Module):
         for param in self.text_model.parameters():
             param.requires_grad = False
         
-        # Vision and text projections
+        # Vision and text projections to align dimensions
         self.vision_projection = nn.Sequential(
             nn.Linear(vision_dim, d_model),
             nn.LayerNorm(d_model),
@@ -295,8 +359,50 @@ class StandaloneVQAClassifier(nn.Module):
             nn.GELU()
         )
         
-        # Multimodal fusion
-        self.fusion = nn.Sequential(
+        # Multi-head fusion transformer layers
+        self.fusion_layers = nn.ModuleList()
+        for _ in range(n_fusion_layers):
+            layer = nn.ModuleDict({
+                # Image attends to text
+                'image_text_attention': MultimodalAttention(d_model, n_heads, dropout_prob),
+                'image_norm1': nn.LayerNorm(d_model),
+                
+                # Text attends to image
+                'text_image_attention': MultimodalAttention(d_model, n_heads, dropout_prob),
+                'text_norm1': nn.LayerNorm(d_model),
+                
+                # Self-attention for fused features
+                'self_attention': MultiHeadAttention(d_model, n_heads),
+                'norm1': nn.LayerNorm(d_model),
+                
+                # Feed-forward layer
+                'ff': nn.Sequential(
+                    nn.Linear(d_model, d_model * 4),
+                    nn.GELU(),
+                    nn.Dropout(dropout_prob),
+                    nn.Linear(d_model * 4, d_model),
+                    nn.Dropout(dropout_prob)
+                ),
+                'norm2': nn.LayerNorm(d_model)
+            })
+            self.fusion_layers.append(layer)
+        
+        # New attention-based feature extraction mechanism
+        self.img_attention = nn.MultiheadAttention(
+            embed_dim=d_model, 
+            num_heads=n_heads,
+            dropout=dropout_prob,
+            batch_first=True
+        )
+        self.txt_attention = nn.MultiheadAttention(
+            embed_dim=d_model, 
+            num_heads=n_heads,
+            dropout=dropout_prob,
+            batch_first=True
+        )
+        
+        # Feature integrator without losing information
+        self.feature_integrator = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
@@ -343,17 +449,61 @@ class StandaloneVQAClassifier(nn.Module):
             )
             text_embeddings = text_outputs.last_hidden_state  # [batch_size, seq_len, text_dim]
         
-        # Global average pooling for both image and text
-        pooled_image_embeddings = image_embeddings.mean(dim=1)  # [batch_size, vision_dim]
-        pooled_text_embeddings = text_embeddings.mean(dim=1)  # [batch_size, text_dim]
+        # Project to common dimension
+        image_features = self.vision_projection(image_embeddings)  # [batch_size, num_patches, d_model]
+        text_features = self.text_projection(text_embeddings)  # [batch_size, seq_len, d_model]
         
-        # Project to model dimension
-        image_features = self.vision_projection(pooled_image_embeddings)  # [batch_size, d_model]
-        text_features = self.text_projection(pooled_text_embeddings)  # [batch_size, d_model]
+        # Create attention mask for text-to-image attention (if needed)
+        if attention_mask is not None:
+            # Expand attention mask for cross attention
+            # All image tokens can be attended to (1s)
+            image_attention = torch.ones(batch_size, image_features.size(1), device=image_features.device)
+            # Keep original text attention mask
+            cross_attention_mask = torch.cat([image_attention, attention_mask], dim=1)
+        else:
+            cross_attention_mask = None
         
-        # Concatenate and fuse features
-        multimodal_features = torch.cat([image_features, text_features], dim=1)  # [batch_size, d_model*2]
-        fused_features = self.fusion(multimodal_features)  # [batch_size, d_model]
+        # Process through fusion layers
+        img_feats = image_features
+        txt_feats = text_features
+        
+        for layer in self.fusion_layers:
+            # Image attends to text (cross-attention)
+            img_txt = layer['image_text_attention'](img_feats, txt_feats, attention_mask)
+            img_feats = img_feats + img_txt
+            img_feats = layer['image_norm1'](img_feats)
+            
+            # Text attends to image (cross-attention)
+            txt_img = layer['text_image_attention'](txt_feats, img_feats, None)  # No mask for attending to images
+            txt_feats = txt_feats + txt_img
+            txt_feats = layer['text_norm1'](txt_feats)
+            
+            # Concatenate for self-attention
+            fused_feats = torch.cat([img_feats, txt_feats], dim=1)
+            
+            # Self-attention
+            fused_feats = fused_feats + layer['self_attention'](layer['norm1'](fused_feats))
+            
+            # Feed-forward
+            fused_feats = fused_feats + layer['ff'](layer['norm2'](fused_feats))
+            
+            # Split back
+            img_feats, txt_feats = fused_feats.split([img_feats.size(1), txt_feats.size(1)], dim=1)
+        
+        # Extract key information from features using attention
+        # For image features - use learned attention to focus on important regions
+        img_query = torch.mean(img_feats, dim=1, keepdim=True)  # [batch_size, 1, d_model]
+        attended_img_feats, _ = self.img_attention(img_query, img_feats, img_feats)
+        attended_img_feats = attended_img_feats.squeeze(1)  # [batch_size, d_model]
+        
+        # For text features - use learned attention to focus on important words
+        txt_query = torch.mean(txt_feats, dim=1, keepdim=True)  # [batch_size, 1, d_model]
+        attended_txt_feats, _ = self.txt_attention(txt_query, txt_feats, txt_feats)
+        attended_txt_feats = attended_txt_feats.squeeze(1)  # [batch_size, d_model]
+        
+        # Concatenate attended features and integrate
+        multimodal_features = torch.cat([attended_img_feats, attended_txt_feats], dim=1)  # [batch_size, d_model*2]
+        fused_features = self.feature_integrator(multimodal_features)  # [batch_size, d_model]
         
         # Classify
         logits = self.classifier(fused_features)  # [batch_size, num_classes]
